@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Initialize DBY-W09 onboard microphones and speakers
+After=local-fs.target systemd-udevd.service systemd-modules-load.service
+ConditionPathExists=!/run/modprobe.d/dby-safe-mode.conf
+
+[Service]
+Type=oneshot
+ExecStart=/run/dby-device/bin/dby-audio-start
+RemainAfterExit=yes
+# Two 15s readiness waits, plus 60s for normal module loading and setup.
+# This is an overall startup budget, not the sum of all per-module timeouts.
+TimeoutStartSec=90s
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

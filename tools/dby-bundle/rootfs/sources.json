@@ -1,0 +1,15 @@
+{
+  "base": {
+    "name": "ubuntu-base-26.04-base-arm64.tar.gz",
+    "sha256": "b2b46a37324ea1954e93f293fe6d7c2241daf2fc298c4022e6e4caceeed74cab"
+  },
+  "baseline_package_count": 1492,
+  "baseline_packages_sha256": "8a24455a81c8c715fa71fe37e12c97b7c3dd4c17088270be7e093c8cf3c7e3dd",
+  "iso": {
+    "name": "ubuntu-26.04.1-desktop-arm64.iso",
+    "sha256": "c54d196489d3c867975fb3bbb72ca52ec2e137456e305481f81096304e4d2517",
+    "version": "26.04.1"
+  },
+  "minimal_squashfs_sha256": "3b98356ba4c8be279429c11a76b75a254db74b446674982bbe8650b29d8d4457",
+  "schema": 1
+}

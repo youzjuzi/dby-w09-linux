@@ -1,0 +1,31 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: GPL-2.0-only
+"""Inspect and verify a bundle without accessing devices."""
+
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dbybundle import BundleError, encode_manifest, verify
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("verify", "show"))
+    parser.add_argument("directory")
+    args = parser.parse_args()
+    try:
+        document = verify(args.directory)
+        if args.command == "show":
+            sys.stdout.buffer.write(encode_manifest(document))
+        else:
+            print(f"OK {document['bundle_id']}")
+        return 0
+    except BundleError as error:
+        print(error, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

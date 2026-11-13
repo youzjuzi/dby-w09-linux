@@ -1,0 +1,277 @@
+# Power key / 电源键
+
+Evidence: **H** = device log read by the maintainer; **R** = user observation; **O** = offline implementation/tests; **U** = not verified.
+
+The session helper in bundle `20261102-24` reads only the input device named
+`pm8941_pwrkey`. A tap requests Mutter `PowerSaveMode=1`; a hold of **800 ms**
+requests `org.gnome.SessionManager.Shutdown` asynchronously while the key is
+still held, without waiting for the dialog to close. GNOME's standard
+shutdown/restart/cancel dialog has a **60-second countdown and shuts down
+automatically if left unanswered**. Its device behavior was checked on one tablet (H + R, see the validation section below).
+If the screen is off at key-down, the helper requests `PowerSaveMode=0` and
+ignores the rest of that gesture. It does not request suspend.
+
+设备包 `20261102-24` 提供会话守护进程：短按关屏，按住 800 ms 非阻塞请求 GNOME
+电源菜单，无需等待对话框结束；**标准对话框带 60 秒倒计时，无人处理会自动关机**。
+按下时检测到屏幕已关则只唤醒。本版已在一台平板上实机验证（H + R，2026-11-08，见下节）：短按关屏/唤醒、长按弹出 GNOME 电源对话框、50 轮开关屏均正常。长期稳定性、休眠和登录界面行为仍未验证（U）。
+
+## Device validation / 实机验证
+
+All results below come from **one tablet, one SD card and one owner on 2026-11-08**, using bundles
+`20261102-20` through `20261102-24`. They do not generalize to other hardware, firmware or long-term use.
+**H** = journal or kernel log read by the maintainer; **R** = user observation.
+
+| Behavior | Result | Evidence |
+|---|---|---|
+| Tap blanks, key wakes | Ten consecutive taps normal on `-20`; six more tap/wake pairs on `-23` (tap 128–156 ms, wake 29–47 ms in the journal). No black-screen type ② seen | H + R |
+| Hold opens GNOME's shutdown dialog | Seen on `-20` and three times on `-23`; the journal shows `long 801 ms requested`, then `dialog closed rc=1` when cancelled. A dialog left open for 14 s did not block the following tap. Automatic shutdown at the end of the countdown was **not** observed | H + R |
+| 50 consecutive off/on cycles (`PowerSaveMode`, 3 s off / 3 s on) | 50/50 completed; every cycle returned to the normal display state with a touch-module reload; the user saw no abnormal picture or touch problem | H + R |
+| Login startup | The unit starts, the input ACL is present and the three GNOME settings are taken over. On `-23` and `-24` the first start failed because the ACL arrived late and the unit restarted successfully a few seconds later. The unit no longer runs under a root session | H |
+| Cover (lid) switch | 11 close/open pairs without failure; closing blanks, opening wakes, touch works; attaching the pen does not blank; a short power press wakes the screen while the cover is closed; no suspend entry in the kernel log; `hall-lid` has the ACL and logind shows all three lid handlers set to `ignore` | H + R |
+| Screen-off draw | About 0.84 W (60 s window, Wi-Fi connected, battery discharging) after the idle-wait change, versus 0.90 W before it; single windows, not repeated | H |
+
+**Not validated (U):** `stop`/`mask`/`unmask`, restoration after a crash or SIGKILL, the login screen (GDM),
+starting with the cover already closed, touch waking a blanked screen, the suspend path, logout/relogin cycles
+and long-term reliability. The intermittent black screen is unresolved; the 50-cycle run did not reproduce it,
+which is not proof of absence.
+
+以上结果来自**一台平板、一张 SD 卡、一位所有者，2026-11-08**，设备包 `20261102-20` 至 `-24`，
+不能推广到其他硬件、固件或长期使用。**H** = 维护者读过的日志；**R** = 用户观察。
+
+- 短按关屏、再按唤醒：`-20` 连续 10 次正常，`-23` 另 6 对正常；无黑屏类型②（H + R）。
+- 长按弹出 GNOME 关机对话框：日志为 `long 801 ms requested`，取消后 `dialog closed rc=1`；对话框开着 14 秒期间不阻塞后续短按；倒计时结束后的自动关机**没有观察**（H + R）。
+- 50 轮开关屏（关 3 秒／开 3 秒）：50/50 完成，画面与触摸无异常（H + R）。
+- 登录后启动：单元启动、输入 ACL 到位、三项 GNOME 设置被接管；ACL 稍晚时第一次启动失败、数秒后自动重试成功；root 会话下不再运行（H）。
+- 合盖：11 对开合无失败，合上关屏、打开亮屏、触摸可用，贴笔不关屏，合盖状态按电源键可亮屏，内核日志无 suspend，logind 三项合盖处理均为 ignore（H + R）。
+- 关屏待机约 0.84 W（60 秒单次，连着 Wi-Fi，放电），空闲等待改动前为 0.90 W；均为单次窗口（H）。
+- **未验证（U）**：stop/mask/unmask、崩溃或 SIGKILL 后的还原、登录界面（GDM）、启动时盖子已合上、触摸唤醒已关屏、休眠路径、登出再登录、长期可靠性。偶发黑屏仍未解决，50 轮未复现不等于不存在。
+
+## Disable and restore / 关闭与恢复
+
+Run as the logged-in desktop user, in that user's session:
+
+```sh
+# Stop now; restore the user's previous GNOME power-button action.
+systemctl --user stop dby-w09-powerkey.service
+# Prevent future automatic starts (does not stop an already running instance).
+systemctl --user mask dby-w09-powerkey.service
+# Undo the mask, then start again.
+systemctl --user unmask dby-w09-powerkey.service
+systemctl --user start dby-w09-powerkey.service
+```
+
+以当前桌面用户运行。临时关闭用 `stop`；永久关闭先 `stop` 再 `mask`。
+`unmask` 后可 `start` 或下次登录恢复。无需把用户加入 `input` 组。
+
+The helper reads and saves `power-button-action`, `lid-close-battery-action`
+and `lid-close-ac-action` together in
+`$XDG_RUNTIME_DIR/dby-w09-powerkey.saved` with mode 0600 before setting all three to
+`nothing` in one GIO delayed-apply transaction. Any unavailable read prevents
+takeover. The existing GJS runtime executes the bounded transaction; every key
+is checked for writability and schema range before staging. A staging failure
+reverts the pending changes before apply. The JSON save file contains all three
+original values; a legacy single-value file restores only the power-button key. Normal exit, SIGTERM and SIGINT restore that value only if takeover
+succeeded at least once in that process. `ExecStopPost` restores a valid saved
+value after exit, including a crash or SIGKILL: the file is written before
+takeover, so its presence means takeover may have occurred. A missing or
+invalid saved file (including a symbolic link) is a successful no-op.
+The saved file is kept so both restores are idempotent.
+A new start saves the then-current setting. Property/settings calls have a five-second timeout;
+failures are logged without exposing subprocess output. Failed takeover is
+retried without overwriting the saved value. Until takeover succeeds, no
+custom key actions run. Restoration still requires a working session bus;
+it cannot be guaranteed when GNOME or the bus is unavailable (**U**).
+
+启动时先完整读取并保存三项设置（JSON、0600），再用现有 GJS/GIO 的 delay/apply
+一次提交三项 nothing；任一读取失败不接管，写入前检查全部键的可写性和范围，
+暂存失败则 revert，不提交部分结果。旧单值保存文件仍只还原电源键；本进程至少成功接管过一次，退出时才还原。
+`ExecStopPost` 独立检查保存文件：有效则还原（文件先于接管写入，表示可能接管过），
+缺失、无效或为符号链接则不动设置并成功退出。还原失败会记录日志；会话总线失效时
+不能保证还原成功（U）。
+
+The user unit sets `StartLimitIntervalSec=0` while keeping `Restart=on-failure`
+and `RestartSec=2`. This allows retries if the input ACL arrives late during login, without exhausting systemd's start-rate limit. On the tested tablet the first start failed that way and the retry succeeded a few seconds later (H).
+
+用户单元用 `StartLimitIntervalSec=0` 关闭启动频率限制，保留失败后每 2 秒重试，
+以等待登录初期可能稍晚生效的输入 ACL；实机上第一次启动确因此失败、数秒后重试成功（H）。
+
+The user unit uses `ConditionUser=!root`; both the normal entry point and
+`--restore` quietly skip UID 0 and the `gdm`/`Debian-gdm` greeter accounts.
+Other users still need a ready Mutter session before takeover succeeds.
+After activation, idle input waits indefinitely in `select`, with no periodic
+polling when no dialog client exists. A pending hold waits for its remaining
+800 ms deadline; desktop readiness retries retain their two-second interval.
+A pending dialog client is polled at most one second after the previous loop
+iteration (earlier input can also trigger a poll). Once reaped, idle waiting
+is indefinite again. A nonblocking signal wakeup pipe makes SIGTERM/SIGINT
+wake `select`, including a signal arriving just before the wait; cleanup
+restores the previous wakeup fd and closes both pipe ends. These paths are
+offline-tested (O). On the tested tablet the helper no longer appeared among the top wake sources in a 60 s screen-off window (H, a single window).
+
+用户单元通过 `ConditionUser=!root` 排除 root；正常入口和 `--restore` 都会
+安静跳过 UID 0 以及 `gdm`/`Debian-gdm`。其他用户仍须等待 Mutter 会话就绪后
+才能接管。激活后无待决长按、无对话框客户端时，`select` 无限阻塞等待输入，
+不再周期轮询；待决长按仅等剩余的 800 ms 截止时间，桌面未就绪仍每 2 秒重试。
+有对话框客户端时，select 最长等 1 秒便检查一次（更早的输入也会触发检查），回收后恢复无限等待。
+非阻塞信号管道使 SIGTERM/SIGINT 能唤醒等待，包括信号恰好先于 select 到达的情况；
+退出时恢复原 wakeup fd 并关闭管道。以上有离线测试（O）；实机一次 60 秒关屏窗口中，守护进程已不在唤醒来源前列（H，仅单次）。
+
+Long presses log `long N ms requested` when the gdbus client starts; this is
+a request, not proof that the dialog appeared. While that client is pending,
+another hold logs `long N ms ignored (dialog pending)`. The event loop polls
+the client without waiting and logs `dialog closed rc=<code> after N ms` on
+exit, preserving nonzero return codes without labelling them failures.
+Only failure to spawn the client logs `long N ms failed`; child output is
+discarded. Short-press/wake handling continues while the request is pending.
+
+There is no five-second dialog timeout. A 120-second cleanup guard requests
+termination of a stuck client; after another two seconds it requests kill if
+necessary, with no waiting in the event loop. On daemon exit, cleanup requests
+termination and waits up to two seconds, then kills and waits up to two more
+seconds if needed, before restoring settings. Terminating the gdbus client
+does not prove the GNOME dialog was cancelled (U).
+
+长按启动客户端后记录 `long N ms requested`，不把它当作对话框已显示的证明；
+客户端仍在时再次长按记 `ignored (dialog pending)`，不启动第二个请求。
+事件循环非阻塞 poll 回收，退出只记 `dialog closed rc=<code> after N ms`，非零码
+不再称为失败；仅启动客户端抛 OSError 时记 `long N ms failed`，子进程输出丢弃。
+等待对话框期间仍可处理短按/唤醒。对话框不受 5 秒超时限制；120 秒兜底请求
+terminate，再过 2 秒仍未退出则请求 kill，循环中不 wait。守护进程退出时先
+terminate 并最多等 2 秒，必要时 kill 再最多等 2 秒，然后按原语义还原设置。
+结束 gdbus 客户端是否取消 GNOME 对话框仍未验证（U）。
+
+The local `systemd.unit(5)` “Unit File Load Path” documents that earlier paths
+win: the user's `$XDG_CONFIG_HOME/systemd/user` (normally
+`~/.config/systemd/user`) precedes `/run/systemd/user`. This is the offline
+basis for the persistent user mask. The device's effective path and mask
+behavior still need verification. The rule `70-dby-w09-powerkey.rules` adds
+`uaccess` only to the exact `pm8941_pwrkey` and `hall-lid` event devices, before
+`73-seat-late.rules` applies the active seat ACL. No other input permissions
+are changed. The existing builder copies the service, wants link and rule
+from the device image's `etc/` into `/run/`; its existing user-link support
+requires no change.
+
+## Key-down decision table / 按下时判定
+
+`we_blanked` records a successful blank request, with a monotonic timestamp.
+The current property is authoritative; cached history alone cannot distinguish
+a fresh GNOME wake from a screen that was already on.
+
+| PowerSaveMode at key-down | we_blanked | Decision / 判定 |
+|---|---|---|
+| 1 | false | Wake once; suppress hold/release / 只唤醒 |
+| 1 | true | Wake once; clear cached state / 只唤醒并清缓存 |
+| 0 | false | Normal tap/hold / 正常短按或长按 |
+| 0 | true | Normal tap/hold; clear stale cache / 清缓存后正常处理 |
+| unavailable or other value | either | Ignore gesture / 忽略本次按键 |
+
+**Known race (U):** if GNOME already woke the screen before the key-down
+property read returns, mode 0 with `we_blanked=true` is treated as a normal
+press. A short release can blank it again. The prescribed “cache AND still
+mode 1” policy does not eliminate that race; it avoids trusting stale cache
+after wake by other input. This table is covered by offline tests, not a
+claim that the race has been solved on hardware.
+
+In the reviewer's single device observation on 2026-11-08 (n=1), with
+`power-button-action=nothing`, GNOME did not wake the blanked screen after a
+power-key press during a 29-second observation. The race was not seen in the 16
+later tap/wake cycles either (H + R); this does not establish its elimination (U).
+
+竞态限制（U）：GNOME 抢先唤醒后若读到 0，即使缓存为真也按正常按键处理，
+短按释放可能再次关屏。实现遵循“缓存为真且当前仍为 1”的约束，未宣称消除竞态。
+审查者于 2026-11-08 的一次实机观察（n=1）中，设置为 `nothing` 时关屏后按电源键，
+29 秒内 GNOME 未自行唤醒；该次未出现竞态，之后 16 次短按/唤醒也未见（H + R），但不能据此宣称竞态消除（U）。
+
+## Validation limits / 验证边界
+
+- Only the named event device is opened read-only. Repeats are ignored. The
+  timer fires a long action at most once while held; release cannot also blank.
+- Input overflow cancels an incomplete gesture. Blocking desktop calls can
+  delay processing; a release processed after 800 ms without a timer action
+  is discarded instead of opening a dialog after release.
+- `After`/`PartOf=graphical-session.target` express ordering/lifetime, not
+  proof of Mutter readiness; the helper probes the bus and defers takeover.
+  User-unit startup and udev ACLs worked at login on the tested tablet (H);
+  logout/relogin cycles are U.
+- Both start and restore skip root and the `gdm`/`Debian-gdm` greeter accounts because
+  `/run/systemd/user` is shared by user managers. Login-screen behavior is
+  outside this feature and remains U. No system-wide dconf defaults are changed; the runtime logind lid
+  policy is described below.
+- Stop/mask and crash restoration, the login screen and long-term reliability
+  are U. Existing intermittent black screens remain unresolved; the 50-cycle
+  run did not reproduce one, which is not proof of absence.
+
+未验证项包括 stop/mask、崩溃还原、登录/退出会话循环、GDM 行为和长期可靠性。压力脚本的内核读数不能代替用户观察屏幕与触摸（用户观察见上节）。
+
+
+## Lid screen control / 皮套合盖关屏
+
+In bundle `20261102-24`, the separate `hall-lid` input reports GPIO113 as
+`EV_SW/SW_LID`, active-low with **200 ms debounce**, without a wakeup-source.
+The helper opens it read-only by exact device name. After settings takeover it
+reads the current switch bitmap: already closed requests `PowerSaveMode=1`;
+already open does nothing. Later close/open transitions request modes 1/0.
+Duplicate states do not repeat requests, even after a failed display call.
+These actions only control the screen and never request suspend or shutdown.
+
+GPIO113 (hall0) activates around **45 degrees**, so the screen can turn off
+before the cover is fully closed. GPIO23 (hall2) also detects the pen and is
+not used for lid control; hall1/hall2 remain observation switches. The probe's shared pinctrl and LDO8 power settings are unchanged. The mapping comes from probe observations on one tablet with one magnetic tri-fold cover and one pen (H + R); with that cover the screen blanks as soon as the segment nearest the screen (about one third) comes down. The lid behavior was validated on that tablet (see the validation section above).
+
+A successful lid blank updates the same blank-history state as a short power
+press. **A short power press while the lid remains closed can still wake the
+screen.** A repeated closed state does not force it off again. Power-key tap,
+hold and wake decisions otherwise remain unchanged. If the lid input is missing,
+inaccessible, disconnected, or its initial state cannot be read, one diagnostic
+is logged and power-key handling continues. A missing/failed input is not retried
+periodically; restart the user service after resolving it. Input overflow is
+resynchronized from the switch bitmap. Idle waiting still has no periodic timer
+unless desktop readiness, a pending hold or a dialog client requires one.
+
+The bundle adds `/run/systemd/logind.conf.d/10-dby-w09-lid.conf` at boot, setting
+`HandleLidSwitch`, `HandleLidSwitchExternalPower`, and `HandleLidSwitchDocked` to
+`ignore`. The local `logind.conf.d(5)` manual lists `/run/systemd/logind.conf.d/`
+as a drop-in search path. A persistent local override belongs in
+`/etc/systemd/logind.conf.d/`; a same-named file there overrides the runtime file.
+This policy prevents logind's own lid action; the session helper separately
+sets both GNOME lid actions to `nothing`. Startup ordering, GNOME policy and
+failure behavior still require hardware validation (**U**).
+
+Stop/mask the user service as described above to disable its screen handling.
+Stop, normal exit or ExecStopPost restores the saved GNOME actions. **If the
+saved lid actions are `suspend` (as in the prior device observation), restoration
+re-enables GNOME's suspend policy: closing the lid afterwards may trigger
+unvalidated sleep (U), despite logind's own ignore policy.** This is not a
+validated suspend configuration. Bus or backend failure can prevent restoration;
+a timed-out transaction can have committed all three settings, so the saved
+file is retained for ExecStopPost recovery. Killing the helper without a working
+restoration path cannot guarantee the original settings return.
+
+设备包 `20261102-24` 将 GPIO113 独立为 `hall-lid`，上报 SW_LID，低有效，
+**去抖 200 ms，无 wakeup-source**。用户进程按名字只读打开；三键接管成功后
+读取当前开关：启动时已合上则关屏，已打开则不操作。之后合上关屏、打开亮屏，
+重复状态不重复请求，调用失败只记录日志；**不请求休眠或关机**。
+
+hall0 约半开 **45°** 就触发，因此关屏可能偏早；hall2 同时被笔触发，不能作为
+合盖信号，hall1/hall2 继续保留探测用途。引脚配置和 LDO8 供电策略不变。
+成功合盖关屏计入原 we_blanked 历史；**合盖状态下短按电源键仍可亮屏**，
+不会因为盖子持续合上而重复强制关屏。其余电源键判定不变。
+
+设备缺失、权限不足、断开或初始状态读取失败时，记录一次诊断并保留电源键功能；
+不周期重试该输入，修好后重启用户服务。输入溢出后通过开关位图重新同步。
+只给 `hall-lid` 和既有电源键精确授予 uaccess，不授权 hall-probe 或其它输入设备。
+
+运行时 logind drop-in 将三项 HandleLidSwitch 配置设为 ignore；本机手册确认
+`/run/systemd/logind.conf.d/` 是标准路径，持久覆盖应放在 `/etc/systemd/logind.conf.d/`，
+同名文件优先于运行时版本。守护进程同时把两项 GNOME 合盖动作设为 nothing。
+用上文 stop/mask 可关闭自定义处理，但停止/退出/ExecStopPost 会还原保存值：
+**若原值为 suspend，还原后合盖可能触发尚未验证的休眠（U），logind 自身的 ignore
+不能保证拦住 GNOME 的请求。** 会话总线或后端失效时还原也不能保证成功。
+
+已在一台平板上验证（H + R，2026-11-08）：11 次开合无失败、触摸恢复、贴笔不关屏、合盖时电源键可唤醒、全程无 suspend 日志；本机的三段磁性皮套只要最靠近屏幕的一段（约三分之一）贴下就关屏。启动时盖子已合上的同步、触摸唤醒已关屏仍未验证（**U**）。
+
+## Lid behavior after stopping / 停止后的合盖行为
+
+s2idle has not been validated. A successful stop restores the saved GNOME lid actions, commonly the default `suspend`; it does not force them to stay `nothing`. With those settings restored, closing the cover can request an unverified suspend path even though logind's package drop-in remains installed. Check the saved/restored settings before closing the cover after disabling this helper; restoration failures retain the U boundary described above.
+
+s2idle 未验证。正常停止会还原保存的 GNOME 合盖动作，通常为默认 `suspend`，不会继续强制 `nothing`。即使 logind 包内 drop-in 仍在，还原后合盖也可能请求未验证的休眠；停用后先核对实际保存／还原值，再合盖。还原失败仍按上文 U 边界处理。

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# SSH entry, seed runtime and regulatory requests.
+openssh-server
+python3
+iw
+wireless-regdb

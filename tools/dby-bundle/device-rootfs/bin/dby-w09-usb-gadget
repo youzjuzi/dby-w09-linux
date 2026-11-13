@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Built-in configfs/NCM only. Alternate roots are for unprivileged host tests.
+set -eu
+CF=${DBY_CONFIGFS_ROOT:-/sys/kernel/config}
+UDCS=${DBY_UDC_ROOT:-/sys/class/udc}
+g=$CF/usb_gadget/dby-w09
+fail() { printf 'USB GADGET ERROR: %s\n' "$*" >&2; exit 1; }
+set -- "$UDCS"/*
+[ "$#" -eq 1 ] && [ -e "$1" ] || fail 'expected exactly one UDC'
+udc=${1##*/}
+[ -d "$CF/usb_gadget" ] || fail 'configfs usb_gadget missing'
+matches() { [ -r "$1" ] && [ "$(cat "$1")" = "$2" ]; }
+if [ -e "$g" ]; then
+    # Never unlink or replace an unknown/partial gadget. Validate before skip.
+    matches "$g/idVendor" 0x1d6b && matches "$g/idProduct" 0x0104 &&
+    matches "$g/strings/0x409/manufacturer" 'DBY-W09 Linux' &&
+    matches "$g/strings/0x409/product" 'DBY-W09 USB network' &&
+    [ -L "$g/configs/c.1/ncm.usb0" ] &&
+    [ "$(readlink -f "$g/configs/c.1/ncm.usb0")" = "$(readlink -f "$g/functions/ncm.usb0")" ] || fail 'existing gadget differs or is incomplete'
+    set -- "$g/functions"/*
+    [ "$#" -eq 1 ] && [ "${1##*/}" = ncm.usb0 ] || fail 'unexpected function'
+    set -- "$g/configs"/*
+    [ "$#" -eq 1 ] && [ "${1##*/}" = c.1 ] || fail 'unexpected configuration'
+    bound=$(cat "$g/UDC")
+    [ -z "$bound" ] || [ "$bound" = "$udc" ] || fail 'bound to different UDC'
+    [ -n "$bound" ] || printf '%s\n' "$udc" > "$g/UDC"
+    printf 'NCM gadget already configured: %s\n' "$udc"
+    exit 0
+fi
+mkdir "$g"
+printf '0x1d6b\n' > "$g/idVendor"
+printf '0x0104\n' > "$g/idProduct"
+mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409"
+printf 'DBY-W09 Linux\n' > "$g/strings/0x409/manufacturer"
+printf 'DBY-W09 USB network\n' > "$g/strings/0x409/product"
+printf 'NCM network\n' > "$g/configs/c.1/strings/0x409/configuration"
+mkdir -p "$g/functions/ncm.usb0"
+ln -s "$g/functions/ncm.usb0" "$g/configs/c.1/ncm.usb0"
+printf '%s\n' "$udc" > "$g/UDC"
+printf 'NCM gadget bound\n'

@@ -1,0 +1,36 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: GPL-2.0-only
+"""Build the p1 device-package stage from explicit JSON configuration."""
+
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dbybundle import BundleError
+from dbybundle.builder import build
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", choices=("device", "rootfs"), default="device")
+    parser.add_argument("--config", help="Explicit device build configuration JSON")
+    args, rest = parser.parse_known_args()
+    if args.stage == "rootfs":
+        from dbybundle.rootfs import main as rootfs_main
+        return rootfs_main(rest)
+    if not args.config or rest:
+        parser.error("device stage requires --config and accepts no rootfs options")
+    try:
+        build(args.config)
+        return 0
+    except BundleError as error:
+        print(error, file=sys.stderr)
+        return 1
+    except (ValueError, UnicodeError):
+        print("E_BUILD_CONFIG: Invalid build input data.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,33 @@
+{
+  "kernel_build_dir": "../../../../build/kernel/out",
+  "kernel_source_dir": "../../../../build/kernel/linux-7.2.10",
+  "dtb": "../../../../build/dtb/dby-w09.dtb",
+  "external_modules": {
+    "kernel/drivers/video/backlight/rt8555-backlight.ko": "../../../../build/modules/rt8555-backlight/rt8555-backlight.ko",
+    "kernel/drivers/power/supply/dby-fg-readonly.ko": "../../../../build/modules/dby-fg-readonly/dby-fg-readonly.ko",
+    "kernel/drivers/input/touchscreen/nt36523-thp.ko": "../../../../build/modules/nt36523-thp/nt36523-thp.ko"
+  },
+  "private_inputs": [
+    "../../../../inputs/radio",
+    "../../../../inputs/gpu",
+    "../../../../inputs/touch",
+    "../../../../inputs/adsp"
+  ],
+  "toolchain": "aarch64-linux-gnu-",
+  "touch": {"enabled": true},
+  "output": "../../../../build/bundle-p1",
+  "epoch": 0,
+  "created": "2026-11-02T00:00:00Z",
+  "sequence": 1,
+  "sources": {
+    "repositories": {
+      "linux": "0000000000000000000000000000000000000000",
+      "kernel": "0000000000000000000000000000000000000000",
+      "uboot": "0000000000000000000000000000000000000000"
+    },
+    "upstream": [
+      {"name": "linux", "version": "7.2.10", "sha256": "2feaa70453e91f541be6a5c9078d8168e081af45a3d9718054850538cff2ebf3"},
+      {"name": "u-boot", "version": "v2026.10", "sha256": "f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739"}
+    ]
+  }
+}

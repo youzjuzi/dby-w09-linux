@@ -1,0 +1,445 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: GPL-2.0-only
+"""Apply bounded, whitelisted seed data; never modify the read-only seed."""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import socket
+import stat
+import struct
+import subprocess
+import tempfile
+from urllib.parse import unquote, urlsplit
+import uuid
+
+LIMIT = 64 * 1024
+MANAGED = "# Managed by dby-seed\n"
+SPACE = " \t\r\n\v\f"
+
+
+def confined(root, relative, *, follow_final=False, allow_seed=False):
+    """Resolve all parents in the target namespace, including merged-/usr."""
+    root = Path(root).absolute()
+    pending = list(PurePosixPath(relative.lstrip("/")).parts)
+    parts, links = [], 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                raise ValueError("target path escape")
+            parts.pop(); continue
+        path = root.joinpath(*parts, part)
+        if path.is_symlink() and (pending or follow_final):
+            links += 1
+            if links > 40:
+                raise ValueError("target link loop")
+            target = os.readlink(path)
+            if target.startswith("/"):
+                parts = []
+            pending = list(PurePosixPath(target).parts)[int(target.startswith("/")):] + pending
+        else:
+            parts.append(part)
+    result = root.joinpath(*parts)
+    if not allow_seed and result.is_relative_to(root / "run/dby-p1"):
+        raise ValueError("read-only seed path")
+    return result
+
+
+def read_bounded(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > LIMIT:
+            raise ValueError("invalid seed file")
+        data = stream.read(LIMIT + 1)
+        if len(data) > LIMIT:
+            raise ValueError("oversized seed")
+        return data
+
+
+def parse(data):
+    """Same scanner semantics as initramfs: skip junk, last assignment wins."""
+    if len(data) > LIMIT or any(b < 32 and b not in (9, 10, 13) or b == 127 for b in data):
+        return {}, ["Invalid bounded seed input ignored."]
+    sections, section, warnings = {"": {}}, "", []
+    for raw in data.decode("utf-8", "surrogateescape").split("\n"):
+        line = raw.strip(SPACE)
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            if len(line) < 3 or not line.endswith("]"):
+                warnings.append("Unrecognized seed line ignored."); continue
+            name = line[1:-1].strip(SPACE)
+            if not name or "[" in name or "]" in name:
+                warnings.append("Unrecognized seed line ignored."); continue
+            section = name.lower() if not name.lower().startswith('wifi "') else name
+            sections.setdefault(section, {})
+            continue
+        if "=" not in line:
+            warnings.append("Unrecognized seed line ignored."); continue
+        key, value = (part.strip(SPACE) for part in line.split("=", 1))
+        if not key:
+            warnings.append("Unrecognized seed line ignored."); continue
+        sections.setdefault(section, {})[key.lower()] = value
+    return sections, warnings
+
+
+def safe_mode(data):
+    sections, _ = parse(data)
+    return sections.get("system", {}).get("safe_mode", "").lower() == "true"
+
+
+def text_value(value, maximum):
+    try:
+        return value and len(value.encode("utf-8")) <= maximum and all(ord(c) >= 32 and ord(c) != 127 for c in value)
+    except UnicodeError:
+        return False
+
+
+def mirror_url(value):
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        decoded = unquote(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.query or parsed.fragment or not text_value(decoded, 2048) or any(c.isspace() for c in decoded) or "\\" in decoded:
+            return None
+        if any(part in (".", "..") for part in unquote(parsed.path).split("/")) or port is not None and not 1 <= port <= 65535:
+            return None
+        return value.rstrip("/")
+    except ValueError:
+        return None
+
+
+def public_key(line):
+    fields = line.split()
+    if len(fields) < 2:
+        return None
+    kind, encoded = fields[:2]
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        position = 0
+        def field():
+            nonlocal position
+            if position + 4 > len(raw):
+                raise ValueError("short key")
+            length = struct.unpack_from(">I", raw, position)[0]; position += 4
+            if length > len(raw) - position:
+                raise ValueError("short key")
+            data = raw[position:position + length]; position += length
+            return data
+        if field() != kind.encode():
+            return None
+        if kind == "ssh-ed25519":
+            valid = len(field()) == 32
+        elif kind == "ssh-rsa":
+            valid = int.from_bytes(field(), "big") > 1 and len(field()) >= 128
+        elif re.fullmatch(r"ecdsa-sha2-nistp(?:256|384|521)", kind):
+            curve = kind.removeprefix("ecdsa-sha2-")
+            valid = field() == curve.encode() and len(field()) == {"nistp256": 65, "nistp384": 97, "nistp521": 133}[curve]
+        elif kind == "sk-ssh-ed25519@openssh.com":
+            valid = len(field()) == 32 and bool(field())
+        else:
+            return None
+        return kind + " " + encoded + "\n" if valid and position == len(raw) else None
+    except (ValueError, struct.error, UnicodeError):
+        return None
+
+
+def escaped(value):
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def make_plan(root, data, keys=None):
+    sections, logs = parse(data)
+    desired = safe_mode(data)
+    result = {"files": {}, "networks": [], "mirror": None, "timezone": None, "packages": [],
+              "country": None, "safe_mode": desired, "logs": logs, "valid": bool(sections),
+              "remove_panel": False, "remove_networks": True}
+    allowed = {"": {"version"}, "apt": {"mirror"}, "display": {"refresh_hz"},
+               "system": {"timezone", "safe_mode"}, "packages": {"install"}}
+    for section, values in sections.items():
+        wifi = re.fullmatch(r'wifi "[^"\r\n]{1,128}"', section, re.I)
+        accepted = {"ssid", "psk", "country"} if wifi else allowed.get(section)
+        if accepted is None:
+            logs.append("Unknown seed section ignored.")
+        elif values.keys() - accepted:
+            logs.append("Unknown seed keys ignored.")
+    if keys is not None:
+        valid = [key for line in keys.decode("utf-8", "replace").splitlines() if (key := public_key(line))]
+        if valid:
+            result["files"]["root/.ssh/authorized_keys"] = ("".join(dict.fromkeys(valid)), 0o600)
+        else:
+            logs.append("No valid SSH public key; existing keys preserved.")
+    if sections.get("", {}).get("version", "1") != "1":
+        logs.append("Unsupported seed version; ordinary settings ignored.")
+        result["valid"] = False
+    if not result["valid"]:
+        return result
+    if sections.get("system", {}).get("safe_mode", "false").lower() not in ("true", "false"):
+        logs.append("Invalid safe mode value treated as false.")
+    countries = set()
+    network_number = 0
+    for section, values in sections.items():
+        if not re.fullmatch(r'wifi "[^"\r\n]{1,128}"', section, re.I):
+            continue
+        number = network_number; network_number += 1
+        ssid, password = values.get("ssid", ""), values.get("psk", "")
+        if not text_value(ssid, 32) or not text_value(password, 64) or not (
+            re.fullmatch(r"[0-9a-fA-F]{64}", password) or 8 <= len(password.encode()) <= 63):
+            logs.append("Invalid network settings ignored."); result["remove_networks"] = False; continue
+        name = f"etc/NetworkManager/system-connections/dby-wifi-{number}.nmconnection"
+        content = (MANAGED + f"[connection]\nid=dby-wifi-{number}\nuuid={uuid.uuid5(uuid.NAMESPACE_OID, 'dby-seed/' + ssid)}\n"
+                   "type=wifi\nautoconnect=true\n\n[wifi]\nmode=infrastructure\nssid=" + escaped(ssid) +
+                   "\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=" + escaped(password) +
+                   "\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n")
+        result["files"][name] = (content, 0o600); result["networks"].append(name)
+        country = values.get("country", "").upper()
+        if re.fullmatch(r"[A-Z]{2}", country):
+            countries.add(country)
+        elif country:
+            logs.append("Invalid regulatory setting ignored.")
+    if len(countries) == 1:
+        result["country"] = countries.pop()
+    elif len(countries) > 1:
+        logs.append("Conflicting regulatory settings ignored.")
+    value = sections.get("apt", {}).get("mirror", "")
+    if value:
+        result["mirror"] = mirror_url(value)
+        if result["mirror"] is None:
+            logs.append("Invalid package mirror ignored.")
+            result["mirror"] = False  # Invalid input must not restore an active choice.
+    refresh = sections.get("display", {}).get("refresh_hz")
+    result["remove_panel"] = refresh is None
+    if refresh in ("60", "120"):
+        result["files"]["etc/modprobe.d/dby-panel.conf"] = (MANAGED + f"options panel_novatek_nt36523 refresh_hz={refresh}\n", 0o644)
+    elif refresh is not None:
+        logs.append("Invalid display setting ignored.")
+    timezone = sections.get("system", {}).get("timezone", "")
+    if timezone:
+        valid = re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*", timezone) and all(part not in (".", "..") for part in timezone.split("/"))
+        if valid and confined(root, "usr/share/zoneinfo/" + timezone, follow_final=True).is_file():
+            result["timezone"] = timezone
+        else:
+            logs.append("Invalid timezone ignored.")
+    for package in sections.get("packages", {}).get("install", "").split():
+        if re.fullmatch(r"[a-z0-9][a-z0-9+.-]{0,127}", package):
+            result["packages"].append(package)
+        else:
+            logs.append("Invalid package name ignored.")
+    result["packages"] = sorted(set(result["packages"]))
+    return result
+
+
+def atomic(path, data, mode=0o644):
+    data = data.encode() if isinstance(data, str) else data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_symlink() and path.is_file() and path.read_bytes() == data and stat.S_IMODE(path.stat().st_mode) == mode:
+        return
+    fd, temporary = tempfile.mkstemp(prefix=".dby-seed-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), mode); stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def owned(path):
+    try:
+        return not path.is_symlink() and path.is_file() and read_bounded(path).startswith(MANAGED.encode())
+    except (OSError, ValueError):
+        return False
+
+
+def command(argv, timeout=20):
+    try:
+        environment = dict(os.environ, DEBIAN_FRONTEND="noninteractive", LC_ALL="C")
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=timeout, env=environment, check=False).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def online(mirror):
+    host = urlsplit(mirror).hostname if mirror else "ports.ubuntu.com"
+    port = urlsplit(mirror).port or (443 if mirror.startswith("https:") else 80) if mirror else 80
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def apply_plan(root, plan, *, effects=False, execute=command, connected=online):
+    root = Path(root).absolute()
+    logs = list(plan["logs"])
+    def attempt(action, label):
+        try:
+            action()
+        except (OSError, ValueError, KeyError, TypeError):
+            logs.append(label + " skipped after an operation error.")
+    def remove(relative):
+        path = confined(root, relative)
+        if owned(path):
+            path.unlink()
+    def write_file(relative, text, mode):
+        path = confined(root, relative)
+        if relative == "root/.ssh/authorized_keys":
+            folder = confined(root, "root/.ssh")
+            if folder.is_symlink():
+                raise ValueError("SSH directory link")
+            folder.mkdir(parents=True, exist_ok=True); folder.chmod(0o700)
+        elif (path.exists() or path.is_symlink()) and not owned(path):
+            raise ValueError("unmanaged file conflict")
+        atomic(path, text, mode)
+    for relative, (text, mode) in plan["files"].items():
+        attempt(lambda r=relative, t=text, m=mode: write_file(r, t, m), "Setting")
+    def safe_status():
+        runtime = confined(root, "run/modprobe.d/dby-safe-mode.conf")
+        active = runtime.is_file() and not runtime.is_symlink()
+        logs.append("Safe mode runtime active." if active else "Safe mode runtime inactive.")
+        if plan["safe_mode"] and not active:
+            logs.append("Safe mode requested but runtime policy missing; initramfs update needed.")
+        if not plan["safe_mode"]:
+            for name in ("dby-safe-mode.conf", "dby-seed-safe-mode.conf"):
+                remove("etc/modprobe.d/" + name)
+    attempt(safe_status, "Safe mode state")
+    if not plan["valid"]:
+        return logs
+    removed_networks = []
+    network = confined(root, "etc/NetworkManager/system-connections", follow_final=True)
+    if network.is_dir() and plan["remove_networks"]:
+        for path in network.glob("dby-wifi-*.nmconnection"):
+            if re.fullmatch(r"dby-wifi-[0-9]+\.nmconnection", path.name) and path.name not in {Path(name).name for name in plan["networks"]}:
+                if owned(path):
+                    def old_network(p=path):
+                        remove(str(p.relative_to(root)))
+                        removed_networks.append(p.stem)
+                    attempt(old_network, "Old network")
+    if plan["remove_panel"]:
+        attempt(lambda: remove("etc/modprobe.d/dby-panel.conf"), "Display restore")
+    def apt():
+        path = confined(root, "etc/apt/sources.list.d/ubuntu.sources")
+        backup = confined(root, "var/lib/dby-seed/ubuntu.sources.original")
+        mirror = plan["mirror"]
+        if mirror is False:
+            return
+        if mirror:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("unsupported package source")
+            if not owned(path):
+                if backup.exists():
+                    raise ValueError("package source changed externally")
+                atomic(backup, path.read_bytes(), 0o600)
+            if backup.is_symlink() or not backup.is_file():
+                raise ValueError("source backup absent")
+            lines, skipping, count = [], False, 0
+            for line in backup.read_text().splitlines():
+                if re.match(r"URIs\s*:", line, re.I):
+                    lines.append("URIs: " + mirror); skipping = True; count += 1
+                elif skipping and line.startswith((" ", "\t")):
+                    continue
+                else:
+                    skipping = False; lines.append(line)
+            if not count:
+                raise ValueError("package URI field absent")
+            atomic(path, MANAGED + "\n".join(lines) + "\n")
+        elif owned(path) and backup.is_file() and not backup.is_symlink():
+            atomic(path, backup.read_bytes()); backup.unlink()
+    attempt(apt, "Package mirror")
+    if plan["timezone"]:
+        def timezone():
+            name = plan["timezone"]
+            path = confined(root, "etc/localtime")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            target = "../usr/share/zoneinfo/" + name
+            if not path.is_symlink() or os.readlink(path) != target:
+                temporary = path.with_name(".dby-localtime")
+                if temporary.exists() or temporary.is_symlink():
+                    raise ValueError("timezone temporary conflict")
+                temporary.symlink_to(target); os.replace(temporary, path)
+            atomic(confined(root, "etc/timezone"), name + "\n")
+        attempt(timezone, "Timezone")
+    if effects and plan["country"]:
+        if not execute(["iw", "reg", "set", plan["country"]]):
+            logs.append("Regulatory request failed.")
+    if effects:
+        for name in removed_networks:
+            if not execute(["nmcli", "connection", "down", "id", name]):
+                logs.append("Old managed network disconnect deferred.")
+    if effects and (plan["networks"] or removed_networks):
+        if not execute(["nmcli", "connection", "reload"]):
+            logs.append("Network reload deferred.")
+    def packages():
+        packages = plan["packages"]
+        if not effects or not packages:
+            return
+        digest = hashlib.sha256(" ".join(packages).encode()).hexdigest()
+        state = confined(root, "var/lib/dby-seed/packages-" + digest)
+        marker = state.with_suffix(".done")
+        if marker.is_file():
+            return
+        tries = json.loads(state.read_text()).get("attempts", 0) if state.is_file() and not state.is_symlink() else 0
+        if type(tries) is not int or tries >= 3:
+            logs.append("Package retry limit reached."); return
+        if not connected(plan["mirror"] or None):
+            logs.append("Packages deferred until network is available."); return
+        atomic(state, json.dumps({"attempts": tries + 1}) + "\n", 0o600)
+        if execute(["apt-get", "update"], timeout=60) and execute(
+                ["apt-get", "install", "-y", "--no-install-recommends", "--", *packages], timeout=60):
+            atomic(marker, "installed\n", 0o600)
+        else:
+            logs.append("Package installation failed; bounded retry on a later boot.")
+    attempt(packages, "Packages")
+    return logs
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path("/"))
+    parser.add_argument("--seed-dir", type=Path)
+    args = parser.parse_args(argv)
+    root = args.root.absolute()
+    messages = []
+    try:
+        if any(path.is_symlink() for path in (root, *root.parents)):
+            raise ValueError("linked target root")
+        seed = args.seed_dir or confined(root, "run/dby-p1/dby-seed", follow_final=True, allow_seed=True)
+        try:
+            data = read_bounded(seed / "seed.conf")
+        except (OSError, ValueError):
+            data = b""; messages.append("Seed configuration unavailable; defaults retained.")
+        try:
+            keys = read_bounded(seed / "authorized_keys")
+        except (OSError, ValueError):
+            keys = None
+        plan = make_plan(root, data, keys)
+        messages += apply_plan(root, plan, effects=root == Path("/"))
+    except Exception:
+        # Boot must continue even with malformed/unavailable input or state.
+        messages.append("Seed application error ignored; boot continues.")
+    for message in dict.fromkeys(messages):
+        print(message, flush=True)
+    try:
+        path = confined(root, "var/log/dby-seed.log")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a") as stream:
+            stream.write("\n".join(dict.fromkeys(messages)) + "\n")
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

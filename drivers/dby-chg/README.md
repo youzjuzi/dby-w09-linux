@@ -1,0 +1,190 @@
+# PM8150B charging management / 充电管理
+
+`dby_chg` uses `1042` to control battery charging and `1643` to signal driver
+health to the inherited watchdog. The battery gauge `dby-fg` delegates STATUS
+to this USB power supply. The device package provides standard OF modalias
+loading; no initramfs charger or new module-list entry is needed.
+
+## Evidence and limits
+
+On one tablet, 2026-11-05, the preceding manual driver sustained charging,
+reported STATUS, stopped petting when unplugged and resumed after reconnecting
+(H); the desktop indicator was observed (R). Unload caused watchdog cutoff in
+about 128 seconds (H). Petting after a watchdog bite did not restart charging;
+USB replug was required (H + R).
+
+A separate controlled experiment kept petting while writing `1042=00`: battery
+current dropped from about +1.30 A to approximately -4 mA within five seconds,
+USB remained present and the system stayed powered. After 60 seconds, writing
+`1042=01` restored about +1.30 A within two seconds without replugging (H).
+The integrated driver (bundle `20261102-10`) was then run on the same tablet
+(2026-11-05): it autoloaded at boot, the desktop charging indicator appeared (R),
+software stop/resume through `1042` worked without replug, and repeated
+plug/unplug left the toggle budget untouched (H + R). On a PC USB port the
+input is roughly SDP-class: about +0.2 A into the battery with the screen off,
+but net discharge (about -0.65 A) with the screen on, in which case STATUS
+correctly reads Not charging (H). **The driver has not run for days and its
+long-term risk is unknown.** Natural FULL/recharge, suspend/resume, multiple
+battery temperatures (the thermistor model is provisional) and the
+unload-restore exception write remain U.
+
+`1006=47` occurs both when charging is disabled and after a watchdog bite;
+it cannot distinguish them. `1207` differed between experimental windows,
+but its meaning remains U; this driver neither samples nor gates on it.
+No fast charging, PD negotiation or input-current control is claimed.
+
+## Fixed write surface
+
+There are exactly four fixed charger write call sites:
+
+- Probe only: `1070=55` permits one `1070=50` write with readback. Already 50
+  is accepted without writing; any other value or read error rejects probe.
+- Healthy USB-present cycles: `1643=01`, at least ten seconds between attempts.
+- Disable: `1042=00`, only after a fresh read of exactly 01.
+- Enable: `1042=01`, only after a fresh read of exactly 00. Normal enable and
+  the bounded remove recovery share this call site.
+
+All constants have compile-time assertions. No watchdog configuration, current
+limit or other charger register is written. Standard ADC5 measurements perform
+the provider's own ADC and EOC operations. Do not run concurrent charger
+experiments or other register writers.
+
+Identity, regmap, IIO and power-supply acquisition precede the one-shot float
+write. Probe accepts enable 01, or 00 with a one-time initial takeover permission;
+other values reject probe. An observed 01 ends that permission. Later unowned
+00 is not silently acquired.
+
+## Runtime policy
+
+First work is scheduled about two seconds after probe, then every ten seconds.
+Every sample checks identity/regmap, 1006/1007/1070/1206/1306/1042, FG voltage,
+current/capacity and ADC temperature. Read or identity failures cause no enable
+write and no pet; later good reads may recover. Invalid enable values, lost
+old-value preconditions, exhausted flip budget, and write/readback failures stop
+management and petting until reload. Failed writes are never retried, including
+on remove. A pet-write failure also stops management.
+
+Healthy means matching identity/regmap, all reads successful, float still 50,
+valid enable byte and USB present. Temperature/voltage/FULL policy failures
+**do not stop petting**. Charging itself requires 1206=0, USB present, float 50,
+all reads successful, positive voltage within limits, permitted temperature,
+and no FULL latch.
+
+Default disable boundaries are inclusive 12.0..42.0°C and <=4.43 V. Outside
+those limits the desired state becomes disabled. Re-enabling requires
+13.0..41.0°C inclusive and <=4.40 V. Hysteresis persists even if a pending
+transition has not yet written. Runtime enable writes are at least 30 seconds
+apart, with at most 12 attempts in the sliding interval (now-1 hour, now].
+Attempts are reserved before I/O; any ambiguous write failure is terminal.
+Only confirmed-USB-present runtime flips count toward this budget. Offline or
+unreadable USB returns KEEP without changing desired state, ownership or toggle
+history, and stops petting. Replug evaluates normal policy immediately, including
+unsafe-temperature/voltage/FULL disable (subject to spacing and budget).
+A requested thirteenth flip stops management/petting. This fault stays latched
+even when old timestamps expire; the timer does not automatically restart management. During the 30-second
+cooldown a pending change waits for a later evaluation; healthy petting continues
+and the actual enable byte is reported. Thus policy violations do not promise
+instant cutoff. Polling and scheduling add latency.
+
+The two test-only module parameters are owner-readable/writable (`0600`):
+`temp_min_decic` defaults to 120, accepts 120..350; `temp_max_decic` defaults to
+420, accepts 150..420. The pair must leave a nonempty inner window
+(min+10 <= max-10). Invalid updates return EINVAL without changing either value.
+The worker snapshots the pair under a mutex; changes apply next evaluation.
+Defaults may be restored; no setting may be less conservative than defaults.
+For a 31°C sample, setting the upper bound to 32°C does **not** cause a violation;
+a controlled stop test needs an upper bound below the current temperature.
+
+The integer beta model is unchanged: Rpu=30k, R0=10k at 25°C, beta=3435K,
+reference 1875000uV. The patched ADC5 provider returns microvolts, not millivolts.
+Model and policy limits are provisional (U), with only a room-temperature
+comparison; numeric bounds -100..150°C are not charging limits. No comprehensive
+open/short validation or multi-temperature calibration is claimed.
+
+## FULL and exit
+
+FULL requires enabled 1042=01, voltage >=4.38 V and 0 <= current <200 mA for
+18 complete intervals and >=180 seconds (normally 19 observations, earliest
+about 182 seconds after probe). Failed gates, read errors or gaps >20 seconds
+break continuity; duplicate/early observations do not advance dwell. FULL
+requests 1042=00 while healthy petting continues. Voltage <4.25 V or an observed
+unplug/replug clears the software latch; allowed policy can then request 01.
+Natural FULL and automatic recharge still need device validation.
+
+Remove synchronously stops work. It may restore 01 once only if this driver
+owns a successful OFF and the latest evaluation allowed charging with confirmed
+USB presence. Preserved offline intent is not permission for remove recovery. It rechecks
+identity/regmap and reads exactly 00 immediately before the write, then verifies
+01. This one exit attempt is explicitly exempt from runtime spacing/budget;
+there is no retry. If the latest evaluation disallowed charging, or management
+has stopped on a fault, it leaves enable unchanged and logs why. Unowned initial
+00 is never restored by remove. Shutdown only stops work and never writes.
+
+The freezable queue does not pet during suspend. Unload, shutdown and faults
+stop pets; the inherited watchdog remains active. After an actual watchdog
+bite, reconnect USB even if policy has recovered. Polling may miss brief USB
+edges. Disabling battery charge does not prove that all external power is off.
+
+## Status and diagnostics
+
+Confirmed offline means Discharging. Online FULL means Full at SOC >=98%,
+otherwise Not charging. Otherwise Charging requires actual 1042=01, positive
+measured current and successful feeding; other online states are Not charging.
+Initial or >20-second stale samples do not claim Charging. ONLINE returns no
+data until a fresh USB observation. Both USB and battery consumers receive
+change events. FG falls back to Unknown if this supply is absent.
+
+Read-only `/sys/kernel/debug/dby-chg/status` includes samples/errors, reason mask,
+feeding/FULL/dwell, pet counts, `enable_reg`, `want_enable`, `toggles_last_hour`,
+`toggle_budget_remaining` (12 minus the current hour count),
+`last_toggle_ms`, `manage_stopped_reason` and OFF ownership. Timestamps are
+milliseconds since probe; zero before any toggle is disambiguated by the count.
+The hour count is pruned at read time. `stopped_seconds_since_present` sums
+observed non-feeding time in the current observed USB session, including an
+ongoing pause. Unknown USB reads do not reset it. It is not a hardware timer or
+bite detector and cannot account for suspend while the last sample was feeding.
+`replug_required_after_watchdog_bite=1` states a limitation, not a detected bite.
+
+Reason bits: 0 identity, 1 read, 2 float, 3 USB absent, 4 hardware temperature,
+5 model temperature, 6 voltage, 7 FULL, 9 pet spacing, 11 write failure,
+12 stopping, 13 enable value/precondition, 14 flip budget, 15 unowned OFF,
+16 pending enable-write cooldown. Bits 8 and 10 are unused. Policy reason bits
+can coexist with successful feeding. Initial fields are placeholders until
+`evaluated=1`. Events cover online, feeding, FULL, reason or enable changes;
+summaries appear every ten minutes and failures are logged.
+
+## Loading and host validation
+
+DT: PM8150B child `dby,pm8150b-charger`, `reg=<0x1000>`,
+`io-channels=<&pm8150b_adc ADC5_BAT_THERM_30K_PU>`, name `batt_therm`.
+ADC unavailability defers probe before writes. FG is queried dynamically;
+missing FG inhibits operations until good reads arrive. Module-list order is
+not probe order, and a slow boot can still require USB replug.
+
+```sh
+make -C "$KERNEL_BUILD" M="$PWD/drivers/dby-chg" MO="$CHG_OUTPUT" \
+    ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 modules
+for test in core therm enable; do
+    cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined \
+        -fno-sanitize-recover=all "drivers/dby-chg/test-$test.c" -lm \
+        -o "$TEST_OUTPUT/test-$test"
+    "$TEST_OUTPUT/test-$test"
+done
+```
+
+## 中文摘要
+
+1042 控制电池停充/恢复，1643 喂狗表示驱动健康；温度、电压或 FULL 停充时继续
+喂狗，读失败停喂，写失败永久停止管理。运行期严格遵守30秒间隔与滑动小时12次
+预算；等待间隔期间实际充电状态可能尚未改变。卸载只在最近评估允许充电且拥有
+停充状态时尝试恢复一次，允许这一次间隔/预算例外，失败不重试；不允许则保持
+禁用并记录日志，shutdown 不写。故障咬合后仍需重新插线。单独使能位实验有
+实机证据；整合版已在一台设备自动加载并通过桌面标示、停充/恢复与插拔测试（H + R，
+2026-11-05），**但未连续运行数日，长期风险未知**；自然FULL/再充电、挂起、
+多温度点与卸载恢复例外仍未验证。电脑口约 500 mA，屏亮时可能净放电。
+
+## Source and risk disclosure / 来源与风险披露
+
+This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The three charger register addresses written are `0x1070/0x1643/0x1042`, with four call sites described above; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
+
+项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址只有 `0x1070/0x1643/0x1042`（上文四处调用），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，无快充，电脑 USB 口屏亮时可能净放电。

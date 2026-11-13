@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=DBY-W09 session power key
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionUser=!root
+# The input ACL may arrive after the user manager starts; keep retrying.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/run/dby-device/bin/dby-w09-powerkey
+ExecStopPost=/run/dby-device/bin/dby-w09-powerkey --restore
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

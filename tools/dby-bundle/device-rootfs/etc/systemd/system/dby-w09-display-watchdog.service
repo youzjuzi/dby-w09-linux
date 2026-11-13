@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=DBY-W09 display startup watchdog
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I -B /run/dby-device/bin/dby-w09-display-watchdog
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

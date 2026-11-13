@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Run before 73-seat-late.rules applies the active seat user's uaccess ACL.
+SUBSYSTEM=="input", KERNEL=="event[0-9]*", ATTRS{name}=="pm8941_pwrkey", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event[0-9]*", ATTRS{name}=="hall-lid", TAG+="uaccess"

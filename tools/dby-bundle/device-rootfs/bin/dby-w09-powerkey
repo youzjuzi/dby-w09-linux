@@ -1,0 +1,526 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""Session power key helper. Device access is read-only; no input exclusivity."""
+
+import argparse
+import fcntl
+import json
+from contextlib import contextmanager
+import os
+from pathlib import Path
+import pwd
+import re
+import select
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+# PW1 policy: distinguish a tap from a deliberate hold without waiting for release.
+LONG_MS = 800
+CALL_TIMEOUT = 5
+# Longer than GNOME's 60-second shutdown countdown; only a client cleanup guard.
+DIALOG_MAX_SECONDS = 120
+DIALOG_STOP_SECONDS = 2
+SCHEMA = "org.gnome.settings-daemon.plugins.power"
+SETTING = "power-button-action"
+ACTIONS = {"nothing", "suspend", "hibernate", "interactive"}
+LID_SETTINGS = ("lid-close-battery-action", "lid-close-ac-action")
+SETTINGS = (SETTING, *LID_SETTINGS)
+LID_ACTIONS = ACTIONS | {"blank", "shutdown", "logout"}
+# Existing GJS/GIO runtime: delay stages all keys, apply submits one changeset.
+# No shell expansion; validate every key/range/writability before any commit.
+SETTINGS_TRANSACTION = r"""
+const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
+const System = imports.system;
+try {
+    const values = JSON.parse(ARGV[0]);
+    const keys = ['power-button-action', 'lid-close-battery-action', 'lid-close-ac-action'];
+    if (Object.keys(values).length !== keys.length ||
+        !keys.every(k => typeof values[k] === 'string'))
+        throw new Error('invalid settings');
+    const settings = new Gio.Settings({schema_id: 'org.gnome.settings-daemon.plugins.power'});
+    for (const key of keys) {
+        if (!settings.is_writable(key) ||
+            !settings.settings_schema.get_key(key).range_check(new GLib.Variant('s', values[key])))
+            throw new Error('unavailable setting');
+    }
+    settings.delay();
+    for (const key of keys) {
+        if (!settings.set_string(key, values[key])) {
+            settings.revert();
+            throw new Error('staging failed');
+        }
+    }
+    settings.apply();
+    Gio.Settings.sync();
+} catch (_) {
+    System.exit(1);
+}
+"""
+DISPLAY = "org.gnome.Mutter.DisplayConfig"
+EVENT = struct.Struct("llHHi")
+
+
+def log(message):
+    print("powerkey: " + message, file=sys.stderr, flush=True)
+
+
+class Desktop:
+    def __init__(self, runner=subprocess.run, emit=log, popen=subprocess.Popen,
+                 clock=time.monotonic):
+        self.runner, self.emit = runner, emit
+        self.popen, self.clock = popen, clock
+        self.dialog = None
+        self.dialog_started = self.dialog_terminating = None
+        self.dialog_killed = False
+
+    def call(self, argv):
+        try:
+            result = self.runner(argv, capture_output=True, text=True,
+                                 timeout=CALL_TIMEOUT, check=False)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        # Never forward subprocess output: it may contain session/private data.
+        self.emit("desktop call failed")
+        return None
+
+    def display(self, method, *args):
+        return self.call(["gdbus", "call", "--session", "--dest", DISPLAY,
+                          "--object-path", "/org/gnome/Mutter/DisplayConfig",
+                          "--method", "org.freedesktop.DBus.Properties." + method,
+                          DISPLAY, "PowerSaveMode", *args])
+
+    def mode(self):
+        result = self.display("Get")
+        match = re.fullmatch(r"\(<(?:int32 )?(-?\d+)>,\)", result or "")
+        if match:
+            return int(match[1])
+        self.emit("display state unavailable")
+        return None
+
+    def set_mode(self, value):
+        assert value in (0, 1)
+        return self.display("Set", f"<int32 {value}>") is not None
+
+    def shutdown_dialog(self):
+        self.poll_dialog()
+        if self.dialog is not None:
+            return "ignored (dialog pending)"
+        try:
+            self.dialog = self.popen([
+                "gdbus", "call", "--session", "--dest", "org.gnome.SessionManager",
+                "--object-path", "/org/gnome/SessionManager", "--method",
+                "org.gnome.SessionManager.Shutdown"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return "failed"
+        self.dialog_started = self.clock()
+        self.dialog_terminating = None
+        self.dialog_killed = False
+        return "requested"
+
+    def signal_dialog(self, force=False):
+        try:
+            if force:
+                self.dialog.kill()
+            else:
+                self.dialog.terminate()
+        except ProcessLookupError:
+            pass  # It exited between poll and signal; next poll reaps it.
+        except OSError:
+            self.emit("dialog signal unavailable")
+
+    def poll_dialog(self):
+        if self.dialog is None:
+            return
+        rc = self.dialog.poll()
+        now = self.clock()
+        if rc is not None:
+            self.emit(f"dialog closed rc={rc} after {(now-self.dialog_started)*1000:.0f} ms")
+            self.dialog = None
+        elif self.dialog_terminating is None and now-self.dialog_started >= DIALOG_MAX_SECONDS:
+            self.dialog_terminating = now
+            self.signal_dialog()
+            self.emit("dialog cleanup timeout; terminate requested")
+        elif (self.dialog_terminating is not None and not self.dialog_killed
+              and now-self.dialog_terminating >= DIALOG_STOP_SECONDS):
+            self.dialog_killed = True
+            self.signal_dialog(force=True)
+            self.emit("dialog cleanup grace expired; kill requested")
+
+    def close_dialog(self):
+        if self.dialog is None:
+            return
+        if self.dialog.poll() is None:
+            self.dialog_terminating = self.clock()
+            self.signal_dialog()
+            try:
+                self.dialog.wait(timeout=DIALOG_STOP_SECONDS)
+            except subprocess.TimeoutExpired:
+                self.dialog_killed = True
+                self.signal_dialog(force=True)
+                try:
+                    self.dialog.wait(timeout=DIALOG_STOP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    self.emit("dialog cleanup still pending")
+        self.poll_dialog()
+
+    def get_action(self):
+        value = self.call(["gsettings", "get", SCHEMA, SETTING])
+        value = value[1:-1] if value and value.startswith("'") and value.endswith("'") else None
+        return value if value in ACTIONS else None
+
+    def set_action(self, value):
+        assert value in ACTIONS
+        return self.call(["gsettings", "set", SCHEMA, SETTING, value]) is not None
+
+
+    def get_actions(self):
+        values = {SETTING: self.get_action()}
+        for key in LID_SETTINGS:
+            text = self.call(["gsettings", "get", SCHEMA, key])
+            value = text[1:-1] if text and text.startswith("'") and text.endswith("'") else None
+            values[key] = value if value in LID_ACTIONS else None
+        return values if all(value is not None for value in values.values()) else None
+
+    def set_actions(self, values):
+        assert valid_settings(values)
+        return self.call(["gjs", "-c", SETTINGS_TRANSACTION, json.dumps(values)]) is not None
+
+
+def valid_settings(values):
+    return (isinstance(values, dict) and set(values) == set(SETTINGS)
+            and all(isinstance(v, str) and v in (ACTIONS if k == SETTING else LID_ACTIONS)
+                    for k, v in values.items()))
+
+
+class Settings:
+    def __init__(self, desktop, runtime, emit=log):
+        self.desktop, self.runtime, self.emit = desktop, Path(runtime), emit
+        self.path = self.runtime / "dby-w09-powerkey.saved"
+        self.prepared = False
+        self.taken = False
+
+    def saved(self):
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    raise ValueError
+                text = stream.read(1025).strip()
+                if text in ACTIONS:  # Legacy single-value file: restore only that key.
+                    return text
+                value = json.loads(text)
+                if not valid_settings(value):
+                    raise ValueError
+                return value
+        except (OSError, ValueError):
+            return None
+
+    def take(self):
+        if self.prepared:
+            return self.activate()
+        value = self.desktop.get_actions()
+        if not valid_settings(value):
+            self.emit("setting unavailable; takeover deferred")
+            return False
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(prefix=".powerkey-", dir=self.runtime)
+            with os.fdopen(fd, "w") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(json.dumps(value, sort_keys=True) + "\n")
+            os.replace(temporary, self.path)
+            self.prepared = True
+        except OSError:
+            self.emit("cannot save setting; takeover deferred")
+            return False
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+        return self.activate()
+
+    def activate(self):
+        ok = self.desktop.set_actions(dict.fromkeys(SETTINGS, "nothing"))
+        self.taken = self.taken or ok
+        return ok
+
+    def restore(self):
+        # Retain the file: the normal exit and ExecStopPost both restore it.
+        value = self.saved()
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return self.desktop.set_action(value)
+        return self.desktop.set_actions(value)
+
+
+class PowerKey:
+    def __init__(self, desktop, clock=time.monotonic, emit=log):
+        self.desktop, self.clock, self.emit = desktop, clock, emit
+        self.pressed = None
+        self.woke = self.long_fired = self.suppressed = False
+        self.we_blanked = False
+        self.blanked_at = None
+
+    def elapsed_ms(self):
+        return max(0, (self.clock() - self.pressed) * 1000)
+
+    def tick(self):
+        if (self.pressed is not None and not self.woke and not self.suppressed
+                and not self.long_fired and self.elapsed_ms() >= LONG_MS):
+            self.long_fired = True
+            elapsed = self.elapsed_ms()
+            status = self.desktop.shutdown_dialog()
+            self.emit(f"long {elapsed:.0f} ms {status}")
+
+    def timeout(self):
+        if self.pressed is None or self.woke or self.suppressed or self.long_fired:
+            return None
+        return max(0, (LONG_MS - self.elapsed_ms()) / 1000)
+
+    def event(self, kind, code, value):
+        if kind != 1 or code != 116 or value not in (0, 1):
+            return
+        if value == 1:
+            if self.pressed is not None:
+                return
+            self.pressed = self.clock()
+            mode = self.desktop.mode()  # First desktop operation at key-down.
+            # PW1: cached blanking alone is NOT evidence that the screen is off.
+            own_blank = self.we_blanked and mode == 1
+            self.woke = mode == 1 or own_blank
+            self.suppressed = mode not in (0, 1)
+            self.long_fired = False
+            if mode == 0 or self.woke:
+                self.we_blanked = False
+            if self.woke:
+                ok = self.desktop.set_mode(0)
+                self.emit(f"wake {self.elapsed_ms():.0f} ms {'ok' if ok else 'failed'}")
+            return
+        if self.pressed is None:
+            return
+        elapsed = self.elapsed_ms()
+        if not (self.woke or self.long_fired or self.suppressed) and elapsed < LONG_MS:
+            ok = self.desktop.set_mode(1)
+            self.we_blanked = ok
+            if ok:
+                self.blanked_at = self.clock()
+            self.emit(f"short {elapsed:.0f} ms {'ok' if ok else 'failed'}")
+        # A delayed release >= LONG_MS never becomes a short tap. The timer,
+        # while held, owns the long action; do not open a dialog after release.
+        self.pressed = None
+
+
+def find_device(sysroot=Path("/sys/class/input"), devroot=Path("/dev/input")):
+    for entry in sorted(sysroot.glob("event*")):
+        try:
+            if (entry / "device/name").read_text().strip() == "pm8941_pwrkey":
+                return devroot / entry.name
+        except OSError:
+            continue
+    raise FileNotFoundError("power key device unavailable")
+
+
+def find_lid(sysroot=Path("/sys/class/input"), devroot=Path("/dev/input")):
+    for entry in sorted(sysroot.glob("event*")):
+        try:
+            if (entry / "device/name").read_text().strip() == "hall-lid":
+                return devroot / entry.name
+        except OSError:
+            continue
+    raise FileNotFoundError("lid input unavailable")
+
+
+@contextmanager
+def optional_lid():
+    stream = None
+    try:
+        stream = find_lid().open("rb", buffering=0)
+        os.set_blocking(stream.fileno(), False)
+    except OSError:
+        if stream is not None:
+            stream.close()
+        log("lid input unavailable; power key only")
+        yield None
+        return
+    with stream:
+        yield stream.fileno()
+
+
+def lid_state(fd):
+    # Linux EVIOCGSW(1), _IOR('E', 0x1b, 1): read only the SW_LID bit.
+    bits = bytearray(1)
+    fcntl.ioctl(fd, 0x8001451b, bits, True)
+    return bits[0] & 1
+
+
+class Lid:
+    def __init__(self, controller, emit=log):
+        self.controller = controller
+        self.emit = emit
+        self.last = None
+        self.buffer = b""
+        self.dropped = False
+
+    def state(self, value, initial=False):
+        if value not in (0, 1) or value == self.last:
+            return
+        self.last = value
+        if initial and value == 0:
+            return  # An already-open lid must not undo a user's blank request.
+        ok = self.controller.desktop.set_mode(value)
+        if value == 1:
+            self.controller.we_blanked = ok
+            if ok:
+                self.controller.blanked_at = self.controller.clock()
+        elif ok:
+            self.controller.we_blanked = False
+        self.emit(f"lid {'closed' if value else 'open'} {'ok' if ok else 'failed'}")
+
+    def read(self, fd, stop):
+        try:
+            data = os.read(fd, EVENT.size * 64)
+        except BlockingIOError:
+            return
+        if not data:
+            raise OSError("lid disconnected")
+        self.buffer += data
+        while len(self.buffer) >= EVENT.size and not stop():
+            _, _, kind, code, value = EVENT.unpack(self.buffer[:EVENT.size])
+            self.buffer = self.buffer[EVENT.size:]
+            if kind == 0 and code == 3:
+                self.dropped = True
+            elif self.dropped:
+                if kind == 0 and code == 0:
+                    self.dropped = False
+                    self.state(lid_state(fd))
+            elif kind == 5 and code == 0:
+                self.state(value)
+
+
+@contextmanager
+def signal_wakeup():
+    # Python may restart select after a signal handler returns. A nonblocking
+    # self-pipe makes even a signal just before select observable as readable.
+    read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    previous = None
+    try:
+        previous = signal.set_wakeup_fd(write_fd)
+        yield read_fd
+    finally:
+        if previous is not None:
+            signal.set_wakeup_fd(previous)
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def event_loop(fd, settings, desktop, stop):
+    with signal_wakeup() as wake_fd, optional_lid() as lid_fd:
+        read_events(fd, wake_fd, settings, desktop, stop, lid_fd)
+
+
+def read_events(fd, wake_fd, settings, desktop, stop, lid_fd=None):
+    controller = PowerKey(desktop, clock=time.monotonic)
+    lid = Lid(controller)
+    active = False
+    retry_at = 0
+    dropped = False
+    buffer = b""
+    while not stop():
+        desktop.poll_dialog()
+        if not active and time.monotonic() >= retry_at:
+            # Ordering alone does not guarantee Mutter readiness.
+            active = desktop.mode() in (0, 1) and settings.take()
+            retry_at = time.monotonic() + 2
+            if active and lid_fd is not None and not stop():
+                try:
+                    # EVIOCGSW also flushes queued EV_SW values in evdev.
+                    lid.state(lid_state(lid_fd), initial=True)
+                except OSError:
+                    log("lid state unavailable; power key only")
+                    lid_fd = None
+        timeout = controller.timeout() if active else max(0, retry_at - time.monotonic())
+        if desktop.dialog is not None:
+            timeout = 1 if timeout is None else min(timeout, 1)
+        readers = [fd, wake_fd] + ([lid_fd] if active and lid_fd is not None else [])
+        readable, _, _ = select.select(readers, [], [], timeout)
+        if wake_fd in readable:
+            os.read(wake_fd, 4096)
+        if stop():
+            break
+        if fd in readable:
+            data = os.read(fd, EVENT.size * 64)
+            if not data:
+                raise OSError("input disconnected")
+            buffer += data
+            while len(buffer) >= EVENT.size:
+                _, _, kind, code, value = EVENT.unpack(buffer[:EVENT.size])
+                buffer = buffer[EVENT.size:]
+                if kind == 0 and code == 3:  # SYN_DROPPED: discard incomplete gestures.
+                    controller.pressed = None
+                    dropped = True
+                elif dropped:
+                    if kind == 0 and code == 0:
+                        dropped = False
+                elif active and not stop():
+                    controller.event(kind, code, value)
+        if lid_fd is not None and lid_fd in readable and active and not stop():
+            try:
+                lid.read(lid_fd, stop)
+            except OSError:
+                log("lid input lost; power key only")
+                lid_fd = None
+        if active and not stop():
+            controller.tick()
+
+
+def main(argv=None, desktop=None, finder=find_device, loop=event_loop):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--restore", action="store_true")
+    args = parser.parse_args(argv)
+    # /run/systemd/user is shared by user managers, including root and GDM.
+    # Both entry points must skip it, or ExecStopPost could change its setting.
+    if os.getuid() == 0 or pwd.getpwuid(os.getuid()).pw_name in ("gdm", "Debian-gdm"):
+        return 0
+    desktop = desktop or Desktop()
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        log("runtime directory unavailable")
+        return 1
+    settings = Settings(desktop, runtime)
+    if args.restore:
+        return 0 if settings.restore() else 1
+    stopping = False
+
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        path = finder()
+        with path.open("rb", buffering=0) as stream:
+            loop(stream.fileno(), settings, desktop, lambda: stopping)
+        return 0
+    except OSError:
+        log("power key input unavailable")
+        return 1
+    finally:
+        desktop.close_dialog()
+        if settings.taken:
+            settings.restore()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

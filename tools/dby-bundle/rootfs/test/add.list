@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# No desktop; retain SSH, seed, wireless and USB networking.
+openssh-server
+python3
+network-manager
+# NM only recommends its Wi-Fi supplicant; keep it with --no-install-recommends.
+wpasupplicant
+rfkill
+systemd
+systemd-sysv
+udev
+kmod
+dbus
+libpam-systemd
+ca-certificates
+curl
+iputils-ping
+netbase
+systemd-resolved
+systemd-timesyncd
+iproute2
+iw
+wireless-regdb

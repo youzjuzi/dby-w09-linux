@@ -1,0 +1,12 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: GPL-2.0-only
+"""Plan or explicitly execute a checked desktop/test rootfs recipe."""
+
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dbybundle.rootfs import main
+
+if __name__ == "__main__":
+    sys.exit(main())

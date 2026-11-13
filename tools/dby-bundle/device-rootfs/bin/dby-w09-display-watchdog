@@ -1,0 +1,338 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: GPL-2.0-only
+"""Display recovery through existing GPIO and desktop mechanisms.
+
+Retain polling, GPIO input requests, recovery limits, desktop fallbacks
+and the delayed X startup cycle. Importing does not access devices.
+"""
+import errno, fcntl, glob, mmap, os, pwd, struct, subprocess, sys, time
+
+TLMM_WEST = 0x0f100000          # sm8250 tlmm "west" tile; pins 135/136 are WEST
+PINS = (135, 136)
+POLL, NEEDED, GAP, SETTLE = 1.0, 2, 0.5, 3.0
+LIMIT, WINDOW = 5, 60.0
+X_START_DELAY = 3.0
+X_ENV = dict(os.environ, DISPLAY=':0', XAUTHORITY='/var/run/lightdm/root/:0')
+
+
+def log(msg):
+    print(msg, flush=True)
+    try:
+        with open('/dev/kmsg', 'w') as f:
+            f.write('DBY-W09 watchdog: %s\n' % msg)
+    except OSError:
+        pass
+
+
+class Gpio:
+    # Linux 7.2.10 include/uapi/linux/gpio.h; explicit padding for aligned u64.
+    CHIPINFO = struct.Struct('=32s32sI')
+    VALUES = struct.Struct('=QQ')
+    LAYOUT = {
+        'gpiochip_info.size': 68, 'gpiochip_info.name': 0,
+        'gpiochip_info.label': 32, 'gpiochip_info.lines': 64,
+        'gpio_v2_line_config.size': 272, 'gpio_v2_line_config.flags': 0,
+        'gpio_v2_line_config.num_attrs': 8, 'gpio_v2_line_config.padding': 12,
+        'gpio_v2_line_config.attrs': 32,
+        'gpio_v2_line_request.size': 592, 'gpio_v2_line_request.offsets': 0,
+        'gpio_v2_line_request.consumer': 256, 'gpio_v2_line_request.config': 288,
+        'gpio_v2_line_request.num_lines': 560,
+        'gpio_v2_line_request.event_buffer_size': 564,
+        'gpio_v2_line_request.padding': 568, 'gpio_v2_line_request.fd': 588,
+        'gpio_v2_line_values.size': 16, 'gpio_v2_line_values.bits': 0,
+        'gpio_v2_line_values.mask': 8,
+    }
+    GET_CHIPINFO = 0x80000000 | (CHIPINFO.size << 16) | 0xb401
+    GET_LINE = 0xc0000000 | (LAYOUT['gpio_v2_line_request.size'] << 16) | 0xb407
+    GET_VALUES = 0xc0000000 | (VALUES.size << 16) | 0xb40e
+    INPUT = 1 << 2
+
+    def __init__(self):
+        self.fd = None
+        self.words = []
+        try:
+            self._request()
+            self.method = 'gpio-cdev'
+        except OSError as e:
+            log('GPIO gpio-cdev failed errno=%s: %s; falling back to devmem'
+                % (e.errno, e.strerror))
+            self._devmem()
+            self.method = 'devmem'
+
+    @staticmethod
+    def _is_tlmm(chip, label):
+        # gpiolib inherits the controller's OF node; msm uses dev_name as label.
+        # Match compatible + reg + label, never the dynamically assigned chip N.
+        root = '/sys/bus/gpio/devices/' + chip
+        for suffix in ('/of_node', '/device/of_node'):
+            try:
+                with open(root + suffix + '/compatible', 'rb') as f:
+                    compatible = f.read().split(b'\0')
+                with open(root + suffix + '/reg', 'rb') as f:
+                    reg = f.read()
+            except OSError:
+                continue
+            if b'qcom,sm8250-pinctrl' not in compatible or len(reg) < 16:
+                return False
+            address = int.from_bytes(reg[:8], 'big')
+            # Task's f000000 spelling, or f100000 in the actual 7.2.10/pack DTB.
+            return (address in (0x0f000000, TLMM_WEST) and
+                    label == ('%x.pinctrl' % address).encode())
+        return False
+
+    def _request(self):
+        failure = OSError(errno.ENODEV, 'no matching sm8250 TLMM gpiochip')
+        for path in sorted(glob.glob('/dev/gpiochip*')):
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+                try:
+                    info = bytearray(self.CHIPINFO.size)
+                    fcntl.ioctl(fd, self.GET_CHIPINFO, info, True)
+                    name, label, lines = self.CHIPINFO.unpack(info)
+                    chip = os.path.basename(path)
+                    if (name.split(b'\0')[0] != chip.encode() or lines < 137 or
+                            not self._is_tlmm(chip, label.split(b'\0')[0])):
+                        continue
+                    request = bytearray(self.LAYOUT['gpio_v2_line_request.size'])
+                    struct.pack_into('=2I', request, 0, *PINS)
+                    consumer = b'dby-w09-watchdog'
+                    offset = self.LAYOUT['gpio_v2_line_request.consumer']
+                    request[offset:offset + len(consumer)] = consumer
+                    # Only INPUT: zero attributes, no bias/drive/edge changes.
+                    struct.pack_into('=Q', request,
+                                     self.LAYOUT['gpio_v2_line_request.config'], self.INPUT)
+                    struct.pack_into('=I', request,
+                                     self.LAYOUT['gpio_v2_line_request.num_lines'], 2)
+                    fcntl.ioctl(fd, self.GET_LINE, request, True)
+                    self.fd, = struct.unpack_from('=i', request,
+                                                   self.LAYOUT['gpio_v2_line_request.fd'])
+                    if self.fd < 0:
+                        raise OSError(errno.EBADF, 'invalid GPIO request fd')
+                    return
+                finally:
+                    os.close(fd)
+            except OSError as e:
+                failure = e
+        raise failure
+
+    def _devmem(self):
+        fd = os.open('/dev/mem', os.O_RDONLY | os.O_SYNC)
+        try:
+            for pin in PINS:
+                m = mmap.mmap(fd, 4096, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ,
+                              offset=TLMM_WEST + 0x1000 * pin)
+                self.words.append(memoryview(m).cast('I'))
+        except OSError:
+            for word in self.words:
+                mapping = word.obj
+                word.release()
+                mapping.close()
+            self.words = []
+            raise
+        finally:
+            os.close(fd)
+
+    def high(self):
+        if self.method == 'gpio-cdev':
+            values = bytearray(self.VALUES.pack(0, 3))
+            fcntl.ioctl(self.fd, self.GET_VALUES, values, True)
+            bits, _ = self.VALUES.unpack(values)
+            return bits & 3 == 3
+        return all(w[1] & 1 for w in self.words)
+
+
+def crtc_active():
+    seen = set()
+    for path in glob.glob('/sys/kernel/debug/dri/*/state'):
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            with open(real) as f:
+                if any(line.strip() == 'active=1' for line in f):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def xset(*args):
+    return subprocess.run(['xset', *args], env=X_ENV, timeout=10,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def x_query():
+    """xset q output, or None when the lightdm X server does not answer."""
+    if not os.path.exists(X_ENV['XAUTHORITY']):
+        return None
+    r = subprocess.run(['xset', 'q'], env=X_ENV, timeout=10, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return r.stdout if r.returncode == 0 else None
+
+
+MUTTER = 'org.gnome.Mutter.DisplayConfig'
+MUTTER_PATH = '/org/gnome/Mutter/DisplayConfig'
+
+
+def wayland_sockets():
+    """Wayland session sockets, real users (large uid) before system users such
+    as the GDM greeter."""
+    socks = [s for s in glob.glob('/run/user/*/wayland-0') if s.split('/')[3].isdigit()]
+    return sorted(socks, key=lambda s: -int(s.split('/')[3]))
+
+
+def wayland_dpms():
+    """Full display off/on in the Wayland session, run as the session user.
+    GNOME: Mutter's PowerSaveMode property (3 = off, 0 = on; verified on the
+    device).  When Mutter does not answer (KDE session): kscreen-doctor --dpms.
+    Returns (label, ok), or None when no Wayland session socket exists."""
+    for sock in wayland_sockets():
+        try:
+            uid = os.stat(sock).st_uid
+            user = pwd.getpwuid(uid).pw_name
+        except (OSError, KeyError):
+            continue
+        env = ['env', 'XDG_RUNTIME_DIR=/run/user/%d' % uid, 'WAYLAND_DISPLAY=wayland-0',
+               'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus' % uid, 'LANG=C.UTF-8']
+
+        def run(*argv):
+            return subprocess.run(['runuser', '-u', user, '--', *env, *argv], timeout=15,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+        def mutter(mode):
+            return run('gdbus', 'call', '--session', '--dest', MUTTER, '--object-path', MUTTER_PATH,
+                       '--method', 'org.freedesktop.DBus.Properties.Set', MUTTER, 'PowerSaveMode',
+                       '<int32 %d>' % mode)
+        try:
+            if mutter(3):
+                time.sleep(GAP)
+                ok = False
+                for _ in range(2):      # never leave the display off: retry the "on" once
+                    try:
+                        ok = mutter(0)
+                    except (OSError, subprocess.TimeoutExpired):
+                        ok = False
+                    if ok:
+                        break
+                return 'mutter PowerSaveMode', ok
+            ok = run('kscreen-doctor', '--dpms', 'off')
+            time.sleep(GAP)
+            return 'kscreen-doctor dpms', run('kscreen-doctor', '--dpms', 'on') and ok
+        except (OSError, subprocess.TimeoutExpired):
+            return 'wayland dpms', False
+    return None
+
+
+def recover():
+    w = wayland_dpms()
+    if w is not None:
+        return w
+    q = x_query()
+    if q is not None and 'does not have the DPMS Extension' not in q:
+        ok = xset('+dpms', 'dpms', 'force', 'off')
+        time.sleep(GAP)
+        ok = xset('dpms', 'force', 'on') and ok
+        xset('-dpms')           # lightdm display-setup runs with DPMS disabled
+        return 'xset dpms', ok
+    if q is not None:           # X started with -dpms: full modeset via xrandr
+        r = subprocess.run(['xrandr', '--query'], env=X_ENV, timeout=10, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        names = [l.split()[0] for l in r.stdout.splitlines() if ' connected' in l]
+        if not names:
+            return 'xrandr (no output)', False
+        ok = subprocess.run(['xrandr', '--output', names[0], '--off'], env=X_ENV,
+                            timeout=10).returncode == 0
+        time.sleep(GAP)
+        ok = subprocess.run(['/usr/local/bin/dby-w09-display-setup'], env=X_ENV,
+                            timeout=20).returncode == 0 and ok
+        return 'xrandr ' + names[0], ok
+    try:
+        for value in ('4', '0'):
+            with open('/sys/class/graphics/fb0/blank', 'w') as f:
+                f.write(value + '\n')
+            time.sleep(GAP if value == '4' else 0)
+        return 'fb', True
+    except OSError as e:
+        return 'fb (%s)' % e, False
+
+
+class XStartCycle:
+    def __init__(self):
+        try:
+            st = os.stat(X_ENV['XAUTHORITY'])
+            self.seen = (st.st_ino, st.st_mtime_ns)
+        except FileNotFoundError:
+            self.seen = None
+        self.due = None
+
+    def poll(self):
+        try:
+            st = os.stat(X_ENV['XAUTHORITY'])
+        except FileNotFoundError:
+            self.seen, self.due = None, None
+            return False
+        key = (st.st_ino, st.st_mtime_ns)
+        if key != self.seen:
+            self.seen = key
+            self.due = time.monotonic() + X_START_DELAY
+        if self.due is None or time.monotonic() < self.due:
+            return False
+        self.due = None
+        try:
+            q = x_query()
+        except (OSError, subprocess.TimeoutExpired):
+            q = None
+        if q and 'does not have the DPMS Extension' not in q:
+            ok = xset('+dpms', 'dpms', 'force', 'off')
+            time.sleep(GAP)
+            ok = xset('dpms', 'force', 'on') and ok
+            xset('-dpms')
+            log('X started: one-time display cycle via xset dpms: %s'
+                % ('ok' if ok else 'command failed'))
+            return True
+        else:
+            log('X started: one-time display cycle skipped: %s'
+                % ('no DPMS extension' if q else 'X not responding'))
+        return False
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit('run as root')
+    gpio = Gpio()
+    log('started (%s, poll %.1fs, %d high reads, gap %.1fs)' % (gpio.method, POLL, NEEDED, GAP))
+    count, recent, last = 0, [], None
+    startup = XStartCycle()
+    while True:
+        time.sleep(POLL)
+        if startup.poll():
+            count = 0
+        state = (crtc_active(), gpio.high())
+        if state != last:
+            log('state: crtc %s, gpio %s' % ('active' if state[0] else 'off',
+                                            'high' if state[1] else 'low'))
+            last = state
+        if not state[0] or not state[1]:
+            count = 0
+            continue
+        count += 1
+        if count < NEEDED:
+            continue
+        now = time.monotonic()
+        recent = [t for t in recent if now - t < WINDOW]
+        if len(recent) >= LIMIT:
+            log('panel down but %d recoveries in %.0fs; waiting' % (len(recent), WINDOW))
+            time.sleep(WINDOW)
+            continue
+        recent.append(now)
+        log('panel down (gpio high %d reads with CRTC active), recovering' % count)
+        how, ok = recover()
+        time.sleep(SETTLE)
+        log('recovered via %s: %s, gpio now %s'
+            % (how, 'ok' if ok else 'command failed', 'high' if gpio.high() else 'low'))
+        count = 0
+
+
+if __name__ == '__main__':
+    main()
