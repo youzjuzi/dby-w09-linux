@@ -81,6 +81,10 @@
 - 驱动说明：[背光](drivers/rt8555-backlight/README.md)、[只读电量计](drivers/dby-fg-readonly/README.md)、[触摸开发快照](drivers/nt36523-thp/README.md)
 - [参与贡献](CONTRIBUTING.md)、[安全政策](SECURITY.md)、[第三方材料](THIRD_PARTY.md)
 
+## 相关项目
+
+- [CoWave-Fall/linux-on-arm-matepad11](https://github.com/CoWave-Fall/linux-on-arm-matepad11)：同一台设备的另一个独立主线 Linux 移植（Arch Linux ARM + KDE Plasma）。按其文档，它覆盖了本项目尚未做的部分（传感器、触控笔、磁吸键盘、挂起到内存），本项目则覆盖另一些（板载音频、视频硬解、SD 安装器）。两个项目互相独立、不共享代码；本仓库不对对方文档的准确性作任何声明。
+
 ## 安全与限制
 
 证据来自一台 HarmonyOS 4.2.0.213、Bootloader 已解锁的 DBY-W09。其他个体、固件和输入组合均为 U。保留并校验自己的原厂 Recovery 镜像以便回退。安装只替换内部 Recovery；U-Boot 另有严格检查后清理 `misc` Recovery 命令的窄例外。Linux 从卡运行。恢复出厂设置前必须先恢复原厂 Recovery。

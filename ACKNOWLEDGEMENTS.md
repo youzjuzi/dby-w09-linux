@@ -6,6 +6,7 @@
 - The **linux-firmware** project, for redistributable firmware.
 - **Canonical** and the **Ubuntu** community, and the **GNOME** and **BlueZ** projects.
 - **Huawei**, which published an open-source kernel and device-tree package for this device that served as a hardware reference. This project is not affiliated with Huawei.
+- The authors of [linux-on-arm-matepad11](https://github.com/CoWave-Fall/linux-on-arm-matepad11), an independent port of the same device whose public documentation is a useful reference.
 - Everyone who tested, advised, or shared research.
 
 Maintainer: see repository history.

@@ -82,6 +82,10 @@ Full-system reinstall has H + R evidence on 2026-11-02/03, limited to one SD car
 - Driver notes: [backlight](drivers/rt8555-backlight/README.md), [read-only battery gauge](drivers/dby-fg-readonly/README.md), [charging management](drivers/dby-chg/README.md), [touch development snapshot](drivers/nt36523-thp/README.md)
 - [Contributing](CONTRIBUTING.md), [security](SECURITY.md), [third-party materials](THIRD_PARTY.md)
 
+## Related projects
+
+- [CoWave-Fall/linux-on-arm-matepad11](https://github.com/CoWave-Fall/linux-on-arm-matepad11): an independent mainline Linux port for the same device (Arch Linux ARM + KDE Plasma). According to its documentation it covers areas this project does not yet (sensors, stylus, magnetic keyboard, suspend to RAM), while this project covers others (onboard audio, hardware video decoding, SD installer). The two projects are independent and share no code; this repository makes no statement about the accuracy of the other project's claims.
+
 ## Safety and limits
 
 Evidence comes from one DBY-W09 with HarmonyOS 4.2.0.213 and an unlocked bootloader. Other units, firmware versions and input combinations are U. Keep a verified copy of your own stock Recovery image for rollback. The only intended internal-storage change during installation is Recovery; U-Boot has a narrowly checked exception to clear the Recovery command in `misc`. Linux runs from the card. Factory reset requires restoring stock Recovery first.
