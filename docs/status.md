@@ -17,9 +17,31 @@ Evidence is from one DBY-W09 with HarmonyOS 4.2.0.213 and an unlocked bootloader
 
 ## R4 fresh rebuild / R4 从零重建
 
-2026-11-15: clean main clones are pinned in [versions](versions.md). The kernel is rebuilt from its checked archive, and private inputs are reused without repeating owner extraction. U-Boot/Recovery is retained. Full bundle `20261115-1` is built and verified (O), using the owner-completed fresh full rootfs (1493 packages). The separate 16 GB card installation and first boot still require their own results; **new-card H/R remains Pending**. Independent third-party blank-card reproduction remains unverified. See the [owner checklist](fresh-install.md). / 本轮离线重建不沿用旧卡的实机结论；新卡安装和首启仍待用户，不能写成维护者从空白卡通过，第三方独立复现仍未验证。
+**2026-11-15: the maintainer passed a fresh installation from a blank 16 GB card following the public documentation (H + R), bundle `20261115-1`. / 维护者于 2026-11-15 从空白 16 GB 新卡照公开文档全新安装通过（H + R），包 `20261115-1`。**
 
-Earlier one-device evidence, not R4 acceptance: DP3 on 2026-11-15 restored boot text, removed the reported boot PLL-lock error and passed six screen cycles at intervals of at least 3 s (maintainer H + R record); rapid-toggle stripes remain. VR1 vibration passed three 300 ms pulses (H + R). The shared-SDAM RTC hypothesis failed with a 2053 wall clock while its gate stayed read-only; it was reverted. Bundle `20261102-37` uses the original p2 offset services and the maintainer reports normal time (H). / 以上属于旧卡，R4 新卡仍须逐项验收。
+Source: the user supplied Claude’s read-only SSH checks (H) and their own interaction observations (R). Codex registers that supplied evidence; it did not access the device or independently review raw SSH output for this update. / 来源为用户提供的 Claude SSH 只读核对（H）及用户交互观察（R）；Codex 本次仅补登，没有访问设备或独立审阅 SSH 原始输出。
+
+| R4 check / 检查 | Reported result / 本次结果 | Class / 级别 |
+|---|---|---|
+| System / 系统 | Running; 0 failed system services / running，失败系统服务 0 个 | H |
+| Wi-Fi seed / 网络种子 | Automatically connected / 自动联网 | H |
+| Display / 显示 | Connected; all four panel supplies present; no `PLL lock failed` or DPU errors / 已连接，四路面板供电均在，无 PLL 锁定失败或 DPU 报错 | H |
+| Desktop, screen and brightness / 桌面、开关屏、亮度 | Normal desktop and brightness; 10 screen off/on cycles at 3-second intervals passed / 桌面、亮度正常，隔 3 s 开关屏 10 次正常 | R |
+| Touch / 触摸 | Loaded at boot and reloaded after screen cycling (H); interaction normal (R) / 开机加载及开关屏后重载成功，用户触摸正常 | H + R |
+| Audio / 音频 | Autostart normal and soundcard registered (H); speakers and microphone normal (R) / 自启正常、声卡已注册，喇叭和麦克风正常 | H + R |
+| Power key and cover / 电源键、合盖 | Power-key daemon normal (H); long press and cover interaction normal (R) / 电源键守护进程正常，长按及合盖正常 | H + R |
+| Charging and battery / 充电、电量 | Charger and fuel-gauge drivers loaded (H); charging display normal (R) / 充电和电量驱动已加载，充电显示正常 | H + R |
+| Vibration / 震动 | Device registered (H); vibration normal (R) / 设备已注册，震动正常 | H + R |
+| Bluetooth / 蓝牙 | hci0 started; no pairing result supplied for this card / hci0 已启动，本卡未提供配对结果 | H for controller / 控制器 H |
+| Watchdog / 看门狗 | Normal / 正常 | H |
+| Venus / 视频 | Modules and firmware present; no decode result supplied for this card / 模块和固件均在，本卡未提供解码结果 | H for presence / 存在性 H |
+| Time / 时间 | Expected for a fresh card: no saved offset at first boot, then chrony corrected time after network connection and the offset was saved / 符合新卡预期：首次开机无已存偏移，联网后 chrony 校准、偏移已保存 | H |
+
+Clean main source commits, the fresh full rootfs (1493 packages), and bundle build/verification (O) remain recorded in [versions](versions.md). The existing Recovery/U-Boot was retained, without rebuilding or reflashing. Private inputs were reused: **their extraction was not repeated and retains its original evidence level**. **Independent third-party blank-card reproduction remains U.** / 构建与校验仍为 O；保留现有 Recovery/U-Boot，未重编、未重刷。私有输入提取未重做、保持原证据级别；第三方独立复现仍 U。
+
+The feedback does not separately report full-card verify/read-back, a 120 Hz reading, USB-C headset use, Bluetooth pairing, Venus decoding, or a later offline boot using the saved offset; these checks remain unverified for this R4 record. Installation success does not extend to rapid-toggle behavior, suspend or long-term reliability. No Bluetooth address or Wi-Fi name is recorded here. See the reusable [owner checklist](fresh-install.md). / 本次未单独提供完整卡 verify／回读、120 Hz 读数、USB-C 耳机、蓝牙配对、Venus 解码及后续离线开机使用已存偏移的结果，这些分项仍未验证；不扩展为快速连按、挂起或长期可靠性结论。不记录蓝牙地址或 Wi-Fi 名称。
+
+Earlier one-device evidence, not R4 acceptance: DP3 on 2026-11-15 restored boot text, removed the reported boot PLL-lock error and passed six screen cycles at intervals of at least 3 s (maintainer H + R record); rapid-toggle stripes remain. VR1 vibration passed three 300 ms pulses (H + R). The shared-SDAM RTC hypothesis failed with a 2053 wall clock while its gate stayed read-only; it was reverted. Bundle `20261102-37` uses the original p2 offset services and the maintainer reports normal time (H). / 以上属于旧卡；R4 新卡结果与边界单列于上表。
 
 ## Rebuilt baseline / 新工程基线
 

@@ -4,7 +4,7 @@
 
 ## R4 source baseline / R4 源码基线 (2026-11-15)
 
-Local main, tracking origin/main and the live public remote main matched before clean local cloning. Rebuild outputs are O only; private extraction was not repeated and new-card installation/first boot remain Pending. The source commits below identify the inputs, not the later documentation branches. / 三库 main 在克隆前核对一致；已有私有输入复用，不把提取流程计为本轮复现；新卡尚未验收。文档提交不改变这些构建来源。
+Local main, tracking origin/main and the live public remote main matched before clean local cloning. Rebuild outputs remain O evidence. The maintainer subsequently passed a fresh installation from a blank 16 GB card following the public documentation on 2026-11-15, bundle `20261115-1` (H + R); see [reported device results](status.md#r4-fresh-rebuild--r4-从零重建). Independent third-party reproduction remains U. Private extraction was not repeated and retains its prior evidence level. The source commits below identify the inputs, not the later documentation branches. / 三库 main 在克隆前核对一致；维护者新卡全新安装已通过（H + R），第三方独立复现仍 U。已有私有输入复用，提取未重做、证据级别不变；文档提交不改变构建来源。
 
 | Repository | R4 main commit |
 |---|---|
@@ -18,7 +18,7 @@ R4's final kernel configuration has SHA-256 `e6fc51a2331ff01bee7ebe40a574b293f6a
 
 ### R4 outputs (O) / 本轮产物
 
-Bundle **`20261115-1`**, full rootfs attached and bundle verification passed. The owner completed the sudo full-rootfs build; its log reports cleanup complete with no build mounts retained. This is host evidence, not a new-card boot result. New-card installation/read-back and first boot remain Pending.
+Bundle **`20261115-1`**, full rootfs attached and bundle verification passed. The owner completed the sudo full-rootfs build; its log reports cleanup complete with no build mounts retained. These build checks remain host evidence (O). Subsequent new-card installation/first boot passed within the H + R scope linked above; this feedback did not separately report the full-card verify/read-back result.
 
 | Artifact | SHA-256 |
 |---|---|
@@ -36,7 +36,7 @@ Full rootfs records **1493 packages**, inventory SHA-256 `f86f7ef114a48c2e864a77
 
 Linux 7.2.10 does not use SOURCE_DATE_EPOCH alone for its UTS/initramfs times; R4 followed the original README and records actual times. See the corrected [kernel build notes](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md). For card selection and first checks, use the [fresh-install checklist](fresh-install.md).
 
-A non-device installer dry-run using 15,258 MiB (15,999,172,608 bytes, slightly below a nominal 16 GB card) passed the rootfs capacity/margin check; p2 is 14,924,382,208 bytes with full p1/p2 read-back planned. No image file or real card was written. Actual card identity/capacity still requires the owner's lsblk comparison and device dry-run. / 仅普通文件目标预检，不替代真卡检查。
+A non-device installer dry-run using 15,258 MiB (15,999,172,608 bytes, slightly below a nominal 16 GB card) passed the rootfs capacity/margin check; p2 is 14,924,382,208 bytes with full p1/p2 read-back planned. This dry-run wrote neither an image file nor a real card; the later owner installation is recorded separately above. For each installation, actual card identity/capacity requires the owner's lsblk comparison and device dry-run. / 仅普通文件目标预检，不替代真卡检查。
 
 ## Historical 2026-11-02 inventory / 历史清单
 

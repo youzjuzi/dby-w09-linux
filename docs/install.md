@@ -4,7 +4,7 @@
 
 [简体中文](install.zh-CN.md) · [Home](../README.md) · [Architecture](architecture.md) · [Status](status.md)
 
-This guide is updated for the 2026-11-15 R4 fresh-build check: clean verified main clones, a newly extracted kernel, and existing owner private inputs. Private extraction is not repeated; the working U-Boot/Recovery is retained. R4 new-card installation and first boot remain Pending; historical H/R results do not validate this run. Independent third-party blank-card reproduction remains unverified. See [status](status.md) for historical evidence and the [fresh-card guide](fresh-install.md) for download checks and a separate 16 GB card checklist. Card writes and sudo steps are owner operations.
+This guide records the **2026-11-15 R4 maintainer fresh installation from a blank 16 GB card following the public documentation: passed (H + R), bundle `20261115-1`**. The supplied report distinguishes Claude’s SSH checks (H) from the user’s interactions (R); see [status](status.md#r4-fresh-rebuild--r4-从零重建) for their scope. Clean verified main clones and a newly extracted kernel were used. Existing owner private inputs were reused; extraction was not repeated and retains its prior evidence level. The working U-Boot/Recovery was retained. Independent third-party blank-card reproduction remains **U**. See the [fresh-card guide](fresh-install.md) for download checks and the separate 16 GB card checklist. Card writes and sudo steps are owner operations.
 
 ## 1. Inputs and workspace
 

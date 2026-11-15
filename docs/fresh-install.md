@@ -1,6 +1,6 @@
 # Fresh rebuild and a separate card / 从零重建与新卡安装
 
-2026-11-15, R4. The full bundle `20261115-1` passed host verification (O), with the owner-completed new full rootfs; rebuild evidence is recorded in [versions](versions.md); new-card installation and first boot remain **Pending** until the owner returns results. There is still no independent third-party blank-card reproduction. Existing private inputs are reused; their extraction is not revalidated by this rebuild. / 本轮复用所有者已有私有输入，提取流程不计为从零复现；新卡与首启待用户操作，不能把离线构建写成 H。
+2026-11-15, R4: **the maintainer passed a fresh installation from a blank 16 GB card following the public documentation (H + R), bundle `20261115-1`**. The user supplied Claude’s SSH checks (H) and their own interaction results (R); see the [recorded results and limits](status.md#r4-fresh-rebuild--r4-从零重建). Host build/verification evidence remains O in [versions](versions.md). Independent third-party blank-card reproduction remains **U**. Existing private inputs were reused; extraction was not repeated and retains its prior evidence level. The existing Recovery/U-Boot was retained. / 维护者于 2026-11-15 从空白 16 GB 卡照公开文档全新安装通过（H + R）；第三方独立复现仍 U。私有输入提取未重做、证据级别不变，现有 Recovery/U-Boot 保留。
 
 ## Host inputs / 主机输入
 
@@ -76,7 +76,7 @@ Use the correct private timezone/network settings; keep seed values and logs pri
 
 ## One-page first-boot checklist / 一页首启清单
 
-Record PASS/FAIL/Pending, date, bundle ID and H/R/O/U for each row. The owner performs interactions; the reviewer may inspect read-only SSH output. Loading modules, decoding, recording or changing settings are owner actions. Keep raw network/identity output private. No row is pre-marked successful.
+Record PASS/FAIL/Pending, date, bundle ID and H/R/O/U for each row. The owner performs interactions; the reviewer may inspect read-only SSH output. Loading modules, decoding, recording or changing settings are owner actions. Keep raw network/identity output private. This is a reusable checklist, not a claim that every row passed in R4; the [2026-11-15 results](status.md#r4-fresh-rebuild--r4-从零重建) record the reported checks and remaining unreported items.
 
 | Check / 检查 | Owner action and read-only evidence / 用户操作及只读证据 |
 |---|---|
@@ -97,7 +97,7 @@ DP3's earlier one-device result improved normal-paced screen cycling; rapid-togg
 
 ### One short Venus decode / 用户单次 Venus 解码
 
-Run on the tablet as the owner after checking the new desktop. This is a proposed R4 check, not an executed result. It uses a short synthetic VP9 profile-0 stream and avoids the known H.264 end-of-stream defect. If the required GStreamer elements are missing, record Pending and resolve tool installation separately; do not substitute a software decoder and report hardware success.
+Run on the tablet as the owner after checking the new desktop. This decode check was not reported executed in the R4 feedback; only the presence of Venus modules and firmware was confirmed (H). It uses a short synthetic VP9 profile-0 stream and avoids the known H.264 end-of-stream defect. If the required GStreamer elements are missing, record Pending and resolve tool installation separately; do not substitute a software decoder and report hardware success.
 
 ```sh
 sudo modprobe venus_core
