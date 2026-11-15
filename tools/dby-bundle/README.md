@@ -156,7 +156,9 @@ gadget uses kernel-generated addresses and no serial string; its network matches
 The charging indicator overlay uses a oneshot helper triggered by charger/fuel-gauge
 uevents, LED registration and a 60-second timer; a separate shutdown unit turns
 both LEDs off after updates stop. Red/green brightness ratios (70/255, 120/255)
-come from the owner-supplied runtime FDT. Offline only; device validation pending.
+come from the owner-supplied runtime FDT. A gauge that is not ready yet is skipped
+without failing the unit. Charging, unplug and reboot behaviour passed on one tablet
+(H + R, 2026-11-15).
 
 The initramfs retains the read-only p1/device image and module binding contract.
 After chroot, before `/sbin/init`, it reads the bounded seed file on read-only p1.
