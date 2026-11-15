@@ -4,7 +4,7 @@
 
 [English](install.md) · [首页](../README.zh-CN.md) · [体系结构](architecture.md) · [状态](status.md)
 
-本指南描述 2026-11-02 的干净重建基线。测试卡／完整卡启动、网络、桌面和 guard=0 的短时触摸检查有 **H 实机记录**；单指、边缘／四角及两指缩放有 **R 用户观察**；命令和契约经过 **O 离线核对**。其他设备／固件、音频、蓝牙配对、手写笔、本次三指手势及触摸长时间稳定性为 **U 未验证**，详见[状态页](status.md)。下文刷机与写卡由所有者执行。
+本指南按 2026-11-15 R4 从零构建检查更新。使用已核对的公开 main 干净克隆、重新解压内核与已有所有者私有输入；输入提取不重做，U-Boot/Recovery 保持现状。R4 新卡安装及首启尚待用户验证，不能沿用旧卡 H/R 作为本轮结果；第三方从空白卡独立复现仍未验证。历史单机证据及限制见[状态页](status.md)，本次校验和另一张 16 GB 卡的操作清单见[新卡手册](fresh-install.md)。写卡和 sudo 步骤仅由所有者执行。
 
 ## 1. 输入与工作目录
 
@@ -29,6 +29,8 @@ workspace/
 
 ## 2. 构建 U-Boot、内核、DTB 与模块
 
+For an SD-only rebuild with a working Recovery/U-Boot, retain it and skip the U-Boot build and Recovery flash steps. R4 follows this scope. / 已有可用引导链时，新卡重建保留 Recovery/U-Boot，不重编或重刷。
+
 在新目录中调用 U-Boot 仓库的锁定构建：
 
 ```sh
@@ -38,7 +40,7 @@ workspace/
 
 脚本校验上游摘要，以 fuzz=0 应用十二个补丁，生成 `build/uboot-out/u-boot.bin`。依赖与原厂镜像重打包说明见该仓库 [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md)／[中文](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md)。
 
-内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用十个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
+内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用十二个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
 
 独立构建设备树，内存 include 由所有者生成：
 
@@ -356,7 +358,7 @@ fastboot reboot
 USB 网络可 SSH 到 `root@172.16.42.1`，Wi-Fi 使用自己私下确认的平板地址。重装会重新生成 SSH 主机密钥，删除旧 known-host 条目前先确认是预期设备。只读检查包括 `uname -r`、`systemctl --failed`、`ip -brief address`、`getent hosts ports.ubuntu.com`、`timedatectl`，以及 NetworkManager、dby-seed 和显示日志；完整桌面另查 GDM／GNOME 与硬件渲染诊断。原始输出私下保存，对外只报告脱敏结论与 H／R／O／U 级别。
 
 - **GNOME 首次向导卡住**：记录中的首会话 dconf worker 忙转，根因未知。以新建桌面用户身份创建 `~/.config/gnome-initial-setup-done`，再用管理权限重启 GDM；这会结束图形会话。该方法恢复了既有会话（H + R），不作为通用修复。
-- **偶发黑屏**：旧系统遗留、尚未解决；单次正常不能判定修复。可用文档中的 safe_mode／SSH 路线诊断，不猜改硬件默认值或换触摸固件。
+- **显示**：DP3 后隔至少 3 s 开关屏的短时单机检查改善（2026-11-15，维护者 H + R 记录）；快速连按条纹仍在，长期可靠性待观察。可用文档中的 safe_mode／SSH 路线诊断，不猜改硬件默认值或换触摸固件。
 - **Wi-Fi 已连但 DNS／时间不通**：当前配方提供 resolved stub 链接和时间服务，应分别检查链路、DNS 和时间，不能仅凭 Wi-Fi 关联推断。
 - **安装命令失败**：保留稳定错误码；`DBY_TRACE=1` 增加命令名／状态，不输出原始参数。`udevadm settle` 有限时且其超时可以非致命，但分区表／节点检查仍必须通过，详见[安装诊断](../tools/dby-install/README.md)。
 - **构建失败或中断**：检查过滤后的日志与清理结果；若报告保留了挂载工作区，应先检查，不能盲删。重试使用新输出目录。
@@ -379,7 +381,7 @@ dmesg | grep -i nt36523
 
 ## 当前源码与旧配方的差异
 
-内核配方现在应用十个补丁。当前默认模块列表还需要 `dby_chg.ko` 与 `dby-tfa9874.ko`；按内核构建指南在独立副本编译，并把目的路径 `kernel/drivers/power/supply/dby_chg.ko`、`kernel/sound/soc/codecs/dby-tfa9874.ko` 加入 `external_modules`。旧示例 JSON 不含这两项，不能只改路径后直接作为完整配置。ADSP 一项也必须替换为所有者实际准备的锁定目录；若不选择板载音频，移除该私有输入并使用自己明确裁剪的模块列表，不能把完整列表当作精简配方。
+内核配方现在应用十二个补丁。当前默认模块列表还需要 `dby_chg.ko` 与 `dby-tfa9874.ko`；按内核构建指南在独立副本编译，并把目的路径 `kernel/drivers/power/supply/dby_chg.ko`、`kernel/sound/soc/codecs/dby-tfa9874.ko` 加入 `external_modules`。示例已补齐这两项，仍须逐项替换占位路径与源码提交。当前完整模块／板级组合还要提供所有者锁定的 Venus 目录。ADSP 一项也必须替换为所有者实际准备的锁定目录；若不选择板载音频，移除该私有输入并使用自己明确裁剪的模块列表，不能把完整列表当作精简配方。
 
 当前音频使用所有者提供的配套 ADSP 固件，在锁中逐文件记录包内 `firmware/qcom/dby-w09/adsp.*` 的摘要与权限。原始取得过程和当前完整功能组合尚无第三方从零复现记录；本文历史 radio／GPU／touch 提取流程不足以声称已完整部署音频／视频。Venus 的既有范围和缺陷见状态页，本次不增加固件部署承诺。
 

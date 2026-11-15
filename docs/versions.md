@@ -2,6 +2,44 @@
 
 [English home](../README.md) · [中文首页](../README.zh-CN.md) · [Install](install.md) · [安装](install.zh-CN.md)
 
+## R4 source baseline / R4 源码基线 (2026-11-15)
+
+Local main, tracking origin/main and the live public remote main matched before clean local cloning. Rebuild outputs are O only; private extraction was not repeated and new-card installation/first boot remain Pending. The source commits below identify the inputs, not the later documentation branches. / 三库 main 在克隆前核对一致；已有私有输入复用，不把提取流程计为本轮复现；新卡尚未验收。文档提交不改变这些构建来源。
+
+| Repository | R4 main commit |
+|---|---|
+| kernel | `dbdc1c115a2f2f7b891fd2629744b79377948a1e` |
+| linux | `164d4486f5bb148844ee760fbb916650129d0f6e` |
+| uboot | `a662eea70fd8c2b2645895617438ac40c89ed4a4` |
+
+The U-Boot source was cloned and its archive checked; no U-Boot/Recovery image was rebuilt or flashed. This commit is not asserted to be the installed Recovery's build source. The checked upstream versions and hashes remain those in the pinned-upstreams table below. See [per-file checksum commands](fresh-install.md#host-inputs--主机输入); a matching digest does not authenticate a signing key. / 保留现有 Recovery；此处 U-Boot 提交不声明为已刷镜像的源码版本。
+
+R4's final kernel configuration has SHA-256 `e6fc51a2331ff01bee7ebe40a574b293f6ae2db3008da57c5bb5771b77ed00ae`; the board DTB is `f09d4e0251614f1c780a16eee8a5fe618ce547099995e8f424b68362dd8a2962`. Both are byte-identical to the corresponding configuration/DTB from the previous `20261102-37` bundle (O). Toolchain: GCC 15.2.0, binutils 2.46, dtc 1.7.2 (36 existing warnings), Python 3.14.4. These owner-specific artifacts are not distributed.
+
+### R4 outputs (O) / 本轮产物
+
+Bundle **`20261115-1`**, full rootfs attached and bundle verification passed. The owner completed the sudo full-rootfs build; its log reports cleanup complete with no build mounts retained. This is host evidence, not a new-card boot result. New-card installation/read-back and first boot remain Pending.
+
+| Artifact | SHA-256 |
+|---|---|
+| Raw Image | `19bd1745898d2b84d2a1618e3462590f0f81cec8fad82cdc916cd217046dcb49` |
+| `p1/UBOOT/Image` | `d858362d80c7ccffd59e3510a0c2088e8a5e1ba8f08b58f02bb4a9b6ccaad9ac` |
+| `p1/UBOOT/MANIFEST` | `c4e5ead44d5ac0e8dc8587fe6bb67a4df5881f11c8dc43912ae904f876b6e1ca` |
+| `p1/UBOOT/dby-device.img` | `b0c65f2dee49a37b103c2eb947e9281b0a28bc8d99f8e6a429dd9b63d8cc042e` |
+| `p1/UBOOT/dby-w09.dtb` | `f09d4e0251614f1c780a16eee8a5fe618ce547099995e8f424b68362dd8a2962` |
+| `p1/UBOOT/initrd.img` | `44a5aa8c3e67ebce3bfb7ac6bce30fbda2c1e605b87ab9a1fce31fa5afc3d0ad` |
+| `rootfs.tar.zst` | `9e1c10c093f4a67da325bcad787eacef3d9211de74e7d005530b468b6ee2179f` |
+
+Against `20261102-37`: DTB and embedded kernel configuration are byte-identical. Raw Image has only 70 changed bytes, all in build version/time, kernel/vDSO build IDs and empty built-in initramfs mtimes. Of 117 modules, 113 become byte-identical after stripping debug sections and build-id. The other four (`qcom-spmi-adc5`, `q6afe`, `q6afe-dai`, `snd-soc-sm8250`) change from old external overrides to the public patched in-tree build; their only extra allocated metadata is `intree=Y`. Removing that metadata as well produces byte-identical files. This changes out-of-tree provenance/taint classification; it is not a driver-code change. The device contents inventories report identical paths, modes and digests for all 102 non-module entries.
+
+Full rootfs records **1493 packages**, inventory SHA-256 `f86f7ef114a48c2e864a77082f6203758afd86f3b0e21ee739ed1de8a08760ae`. Against the owner's 1492-package inventory: adds openssh-server/openssh-sftp-server, removes firmware-sof-signed, updates openssh-client/wireless-regdb. APT is not frozen. No hardware acceptance is inferred from these package changes or host tests (234 bundle, 164 installer, 23 kernel checks).
+
+Linux 7.2.10 does not use SOURCE_DATE_EPOCH alone for its UTS/initramfs times; R4 followed the original README and records actual times. See the corrected [kernel build notes](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md). For card selection and first checks, use the [fresh-install checklist](fresh-install.md).
+
+A non-device installer dry-run using 15,258 MiB (15,999,172,608 bytes, slightly below a nominal 16 GB card) passed the rootfs capacity/margin check; p2 is 14,924,382,208 bytes with full p1/p2 read-back planned. No image file or real card was written. Actual card identity/capacity still requires the owner's lsblk comparison and device dry-run. / 仅普通文件目标预检，不替代真卡检查。
+
+## Historical 2026-11-02 inventory / 历史清单
+
 Bilingual baseline inventory, dated **2026-11-02**. The hashes identify recorded inputs/outputs, not downloadable firmware or signed releases. **O** = offline build/hash records; **H** = that input combination later booted on the maintainer's device; **R** = user observation. Other private inputs can produce different outputs. APT is not frozen, so rootfs reproduction across dates is not guaranteed.
 
 本页中英双语，记录 **2026-11-02** 基线。摘要用于识别记录中的输入／产物，不提供固件下载，也不是签名发布。**O**＝离线构建／摘要记录；**H**＝该输入组合后来在维护者设备启动；**R**＝用户观察。其他私有输入可能产生不同结果，APT 未固定快照，不能保证跨日期 rootfs 相同。

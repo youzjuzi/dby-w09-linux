@@ -1,5 +1,7 @@
 # DBY-W09 Linux
 
+R4（2026-11-15）：见[从零重建与另一张 16 GB 新卡清单](docs/fresh-install.md)。已有私有输入复用，提取不重做；新卡安装／首启 Pending，第三方独立复现仍未验证。保留现用卡作回退，现有 Recovery/U-Boot 不重编、不重刷。
+
 这是单机开发系统：桌面、显示／触摸、网络、音频和基础充电有各自限定范围的 H／R 记录；休眠、摄像头和传感器仍为 U。**刷写需要已解锁 Bootloader，会替换 Recovery，可能导致无法启动。安装流程未经第三方从空白卡独立验证，欢迎反馈。**
 
 在华为 MatePad 11（DBY-W09，骁龙 865）上，从 microSD 卡运行基于主线的 Linux 和 Ubuntu ARM64。正常开机仍进入鸿蒙；手动进 Recovery 后，由 U-Boot 启动卡上的系统。日常启动无需电脑；首次准备需要 Linux 构建主机，以及所有者已解锁的设备。
@@ -26,7 +28,7 @@
 | 线 | 当前结果 | 证据 |
 |---|---|---|
 | 启动与 SD 安装 | 最小测试卡、完整桌面卡均经 Recovery → U-Boot → Linux → Ubuntu 启动 | H，2026-11-02 |
-| 显示与 GPU | 120 Hz GNOME Wayland、Adreno 加速；亮度滑块已有观察 | H + R，2026-11-02；偶发黑屏仍未解决 |
+| 显示与 GPU | 120 Hz GNOME Wayland、Adreno 加速；亮度滑块已有观察 | H + R，2026-11-02；DP3 正常节奏开关屏改善（2026-11-15，H + R），快速连按条纹仍在 |
 | USB 网卡／SSH | USB 网络上的 root 公钥登录 | H，2026-11-02 |
 | Wi-Fi、DNS、时间 | 种子自动连接、DNS、HTTP 访问与时间同步 | H，2026-11-02 |
 | Wi-Fi 6（HE） | 一台平板连接 5 GHz（WPA2）手机热点，协商到 80 MHz、HE、2×2 链路；此为链路速率，不是实测吞吐。固件法规规则禁用 2.4 GHz 信道 12–14；同一热点设为 2.4 GHz 时未被扫描到，原因未证实 | H + R，2026-11-03 |
@@ -44,14 +46,14 @@
 
 音频自启（可靠性 R/U；四次冷启动三次成功、一次失败；`20261102-18` 修复后六次冷启动全部成功；此前已测 mask／unmask）：`sudo systemctl mask dby-w09-audio.service` 后重启可关闭，`sudo systemctl unmask dby-w09-audio.service` 后重启恢复；安全模式跳过已实现但未做实机测试（U），失败后必须重启才能重试。见[启动说明](docs/audio-capture.md)。
 
-已知问题包括偶发黑屏、GNOME 首次向导可能卡住、额外包种子联网时序，以及尚未测量的耗电与长时间稳定性。触摸仅做过短时测试，开机偶发起不来与长时间表现仍为 U。单次会话正常不能说明这些问题已经解决。
+DP3 后隔至少 3 s 开关屏的短时单机检查改善（2026-11-15，H + R），快速连按条纹仍在，长期表现待观察。其他已知问题包括GNOME 首次向导可能卡住、额外包种子联网时序，以及尚未测量的耗电与长时间稳定性。触摸仅做过短时测试，开机偶发起不来与长时间表现仍为 U。单次会话正常不能说明这些问题已经解决。
 
 ## 三个仓库的分工
 
 | 仓库 | 职责 |
 |---|---|
 | [dby-w09-linux](https://github.com/youzjuzi/dby-w09-linux) | 本中心仓库：树外驱动、bundle／rootfs 构建器、SD 安装器、运行时配置及用户教程 |
-| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Linux 7.2.10 的十个补丁、配置、板级 DTS、所有者数据提取工具和构建配方 |
+| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Linux 7.2.10 的十二个补丁、配置、板级 DTS、所有者数据提取工具和构建配方 |
 | [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | U-Boot v2026.10 的十二个补丁、配置、构建脚本和原厂 Recovery 重打包工具 |
 
 ## 构建 → bundle → 写卡 → 上机 → 检查

@@ -4,7 +4,7 @@
 
 [简体中文](install.zh-CN.md) · [Home](../README.md) · [Architecture](architecture.md) · [Status](status.md)
 
-This guide describes the 2026-11-02 rebuilt baseline. **H** device records cover test/full card boot, networking, desktop and a short touch check with `guard=0`; **R** covers single touch, edges/four corners and two-finger pinch. The commands and contracts are checked **O** (offline). Other devices/firmware, stylus, current three-finger gestures and long-term touch stability are **U**. Later audio and one-mouse Bluetooth records are scoped in status. See [status](status.md) for limits. Flashing and card writes below are owner operations.
+This guide is updated for the 2026-11-15 R4 fresh-build check: clean verified main clones, a newly extracted kernel, and existing owner private inputs. Private extraction is not repeated; the working U-Boot/Recovery is retained. R4 new-card installation and first boot remain Pending; historical H/R results do not validate this run. Independent third-party blank-card reproduction remains unverified. See [status](status.md) for historical evidence and the [fresh-card guide](fresh-install.md) for download checks and a separate 16 GB card checklist. Card writes and sudo steps are owner operations.
 
 ## 1. Inputs and workspace
 
@@ -29,6 +29,8 @@ Prepare your own [firmware and locks](firmware-preparation.md). In the kernel re
 
 ## 2. Build U-Boot, kernel, DTB and modules
 
+For an SD-only rebuild with a working Recovery/U-Boot, retain it and skip the U-Boot build and Recovery flash steps. R4 follows this scope. / 已有可用引导链时，新卡重建保留 Recovery/U-Boot，不重编或重刷。
+
 Run the U-Boot repository's pinned build in new directories:
 
 ```sh
@@ -38,7 +40,7 @@ Run the U-Boot repository's pinned build in new directories:
 
 The script checks its upstream hash, applies twelve patches with fuzz=0 and builds `build/uboot-out/u-boot.bin`. See its [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md) / [Chinese](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md) instructions for dependencies and stock-image repacking.
 
-For the kernel, follow the complete [pinned build recipe](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md) ([中文](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)): check the archive, extract to a new source directory, apply ten patches with fuzz=0, copy your generated panel header, then run `olddefconfig` and `Image modules` with a separate `O=` directory. Record the actual final configuration and release. `PCI_PWRCTRL_PWRSEQ` becomes a module; the bundle module list includes it. Do not force its configuration or change digest gates to hide differences.
+For the kernel, follow the complete [pinned build recipe](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md) ([中文](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)): check the archive, extract to a new source directory, apply twelve patches with fuzz=0, copy your generated panel header, then run `olddefconfig` and `Image modules` with a separate `O=` directory. Record the actual final configuration and release. `PCI_PWRCTRL_PWRSEQ` becomes a module; the bundle module list includes it. Do not force its configuration or change digest gates to hide differences.
 
 Build the board DTB separately (the memory include is owner-generated):
 
@@ -374,7 +376,7 @@ Use plain `fastboot reboot`, not `fastboot reboot recovery`. Power off, insert t
 SSH to `root@172.16.42.1` over the USB network, or to the tablet's privately determined Wi-Fi address. Reinstallation regenerates SSH host keys; verify the expected device before removing its old known-host entry. As read-only checks, inspect `uname -r`, `systemctl --failed`, `ip -brief address`, `getent hosts ports.ubuntu.com`, `timedatectl` and the journals for NetworkManager, dby-seed and the display. Full desktop checks include GDM/GNOME and hardware-rendering diagnostics. Keep raw output private; public reports should give sanitized results and H/R/O/U evidence labels.
 
 - **GNOME first setup hangs:** the recorded first session had a busy dconf worker; root cause is unknown. As the newly created desktop user, create `~/.config/gnome-initial-setup-done`, then restart GDM with administrative rights. Restarting GDM ends graphical sessions. This restored the recorded session (H + R), not a general fix.
-- **Intermittent black screen:** unresolved from the earlier system. A successful session does not prove it fixed. Use the documented safe-mode/SSH path for diagnosis; do not substitute touch firmware or change hardware defaults speculatively.
+- **Display:** DP3 improved normal-paced cycling (at least 3 s intervals) in a short one-tablet check on 2026-11-15 (maintainer H + R record). Rapid-toggle stripes remain; long-term reliability is unverified. Use the documented safe-mode/SSH path for diagnosis; do not substitute touch firmware or change hardware defaults speculatively.
 - **Wi-Fi works but DNS/time do not:** the current recipe supplies the resolved stub link and time service. Check link state, DNS and time separately; do not infer them from Wi-Fi association alone.
 - **Install command failed:** retain the stable error code; `DBY_TRACE=1` adds command names/status without raw arguments. A `udevadm settle` timeout is bounded and may be nonfatal, but partition-table/node checks must still pass. See the [installer diagnostics](../tools/dby-install/README.md).
 - **A build fails or is interrupted:** inspect its filtered log and cleanup result. A reported retained mounted workspace needs inspection; do not delete it blindly. A new attempt needs a fresh output directory.
@@ -397,7 +399,7 @@ Compare the parameters with the options line above, especially `guard=0`. The re
 
 ## Current source versus the historical recipe
 
-The kernel recipe now applies ten patches. The current default module list also requires `dby_chg.ko` and `dby-tfa9874.ko`: build them in separate copies using the kernel guide and add destinations `kernel/drivers/power/supply/dby_chg.ko` and `kernel/sound/soc/codecs/dby-tfa9874.ko` to `external_modules`. The older example JSON lacks both mappings and is not a complete config after changing paths alone. Replace its ADSP entry with an actual owner-prepared locked directory. If omitting onboard audio, remove that private input and supply an explicitly reduced module list; the full list is not the minimal recipe.
+The kernel recipe now applies twelve patches. The current default module list also requires `dby_chg.ko` and `dby-tfa9874.ko`: build them in separate copies using the kernel guide and add destinations `kernel/drivers/power/supply/dby_chg.ko` and `kernel/sound/soc/codecs/dby-tfa9874.ko` to `external_modules`. The example includes these mappings; replace every placeholder path and source commit. Include an owner-prepared locked Venus directory for the current full module/board combination. Replace its ADSP entry with an actual owner-prepared locked directory. If omitting onboard audio, remove that private input and supply an explicitly reduced module list; the full list is not the minimal recipe.
 
 Current onboard audio consumes a matching owner-supplied ADSP set, locked per file at package paths `firmware/qcom/dby-w09/adsp.*` with hashes and modes. Acquisition and the complete current feature combination have not been independently reproduced from scratch. The historical radio/GPU/touch guide does not constitute complete audio/video deployment instructions. Existing Venus scope and defects are in status; this review adds no firmware deployment promise.
 

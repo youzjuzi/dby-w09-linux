@@ -1,5 +1,7 @@
 # DBY-W09 Linux
 
+R4 (2026-11-15): see the [fresh rebuild and separate 16 GB card checklist](docs/fresh-install.md). Existing private inputs are reused; extraction is not repeated. New-card installation/first boot are Pending; third-party reproduction remains unverified. Preserve the working card for rollback and retain the existing Recovery/U-Boot without rebuilding or reflashing.
+
 One-tablet development system: GNOME, display/touch, networking, audio and basic charging have scoped H/R records; suspend, cameras and sensors remain U. **Flashing requires an unlocked bootloader, replaces Recovery and can leave the device unbootable. The installation workflow has not been independently validated by a third party starting from a blank card. Feedback is welcome.**
 
 Run mainline-based Linux and Ubuntu ARM64 from a microSD card on the Huawei MatePad 11 (DBY-W09, Snapdragon 865). Normal power-on keeps HarmonyOS as the default; manual Recovery entry starts U-Boot and the card's system. Everyday boot needs no computer. Initial preparation uses a Linux build host and an owner-unlocked device.
@@ -26,7 +28,7 @@ Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = use
 | Area | Current result | Evidence |
 |---|---|---|
 | Boot and SD installation | Minimal test and full desktop cards boot through Recovery → U-Boot → Linux → Ubuntu | H, 2026-11-02 |
-| Display and GPU | 120 Hz GNOME Wayland session with Adreno acceleration; brightness control observed | H + R, 2026-11-02; intermittent black screen remains unresolved |
+| Display and GPU | 120 Hz GNOME Wayland session with Adreno acceleration; brightness control observed | H + R, 2026-11-02; DP3 normal-paced cycling improved on 2026-11-15 (H + R); rapid-toggle stripes remain |
 | USB network / SSH | Root public-key login over the USB network | H, 2026-11-02 |
 | Wi-Fi, DNS and time | Seed-created connection, DNS, HTTP access and time synchronization | H, 2026-11-02 |
 | Wi-Fi 6 (HE) | A phone hotspot on 5 GHz (WPA2) negotiated an 80 MHz HE 2×2 link on one tablet; this is the link rate, not measured throughput. Firmware regulatory rules disable 2.4 GHz channels 12–14; the same hotspot on 2.4 GHz was not seen, cause unconfirmed | H + R, 2026-11-03 |
@@ -45,14 +47,14 @@ Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = use
 
 Audio autostart (reliability R/U after three successes and one failure in four cold boots; `20261102-18` fix passed six cold boots, long-term reliability R/U; masking and unmasking tested earlier): `sudo systemctl mask dby-w09-audio.service` disables it after reboot; `sudo systemctl unmask dby-w09-audio.service` restores it after reboot. Safe-mode skip is implemented but not device-tested (U); failure requires reboot before retry. See [startup details](docs/audio-capture.md).
 
-Known issues include intermittent black screen, a possible first GNOME setup hang, extra-package seed timing, and power use measured only in a few one-tablet runs plus untested long-term stability. Touch was checked only in a short session; intermittent startup failures and long-term behavior remain U. A successful session does not resolve these issues.
+DP3 improved screen cycling at intervals of at least 3 s in a short one-tablet check (2026-11-15, H + R); rapid-toggle stripes remain and long-term behavior needs observation. Other known issues include a possible first GNOME setup hang, extra-package seed timing, and power use measured only in a few one-tablet runs plus untested long-term stability. Touch was checked only in a short session; intermittent startup failures and long-term behavior remain U. A successful session does not resolve these issues.
 
 ## Repository roles
 
 | Repository | Responsibility |
 |---|---|
 | [dby-w09-linux](https://github.com/youzjuzi/dby-w09-linux) | This hub: out-of-tree drivers, bundle/rootfs builders, SD installer, runtime configuration and user guides |
-| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Ten patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
+| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Twelve patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
 | [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | Twelve patches for U-Boot v2026.10, configuration, build script and stock-Recovery repacking tool |
 
 ## Build → bundle → card → boot → check

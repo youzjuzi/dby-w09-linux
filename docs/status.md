@@ -2,7 +2,7 @@
 
 [English home](../README.md) · [中文首页](../README.zh-CN.md) · [Install](install.md) · [安装](install.zh-CN.md)
 
-Date / 日期：**2026-11-11**。This page is bilingual; current and historical results are separated below. / 本页中英双语，当前基线与历史结果分开列出。
+Date / 日期：**2026-11-15**。This page is bilingual; current and historical results are separated below. / 本页中英双语，当前基线与历史结果分开列出。
 
 | Class / 级别 | Meaning / 含义 |
 |---|---|
@@ -14,6 +14,12 @@ Date / 日期：**2026-11-11**。This page is bilingual; current and historical 
 Evidence is from one DBY-W09 with HarmonyOS 4.2.0.213 and an unlocked bootloader. H is not proof for other devices, input combinations or every public commit. Recorded source commits are listed in [versions](versions.md). An O result is never promoted to H.
 
 证据来自一台 HarmonyOS 4.2.0.213、Bootloader 已解锁的 DBY-W09。H 不能证明其他设备、输入组合或每个公开提交均成立；记录中的源码提交见[版本页](versions.md)。O 不等于 H。
+
+## R4 fresh rebuild / R4 从零重建
+
+2026-11-15: clean main clones are pinned in [versions](versions.md). The kernel is rebuilt from its checked archive, and private inputs are reused without repeating owner extraction. U-Boot/Recovery is retained. Full bundle `20261115-1` is built and verified (O), using the owner-completed fresh full rootfs (1493 packages). The separate 16 GB card installation and first boot still require their own results; **new-card H/R remains Pending**. Independent third-party blank-card reproduction remains unverified. See the [owner checklist](fresh-install.md). / 本轮离线重建不沿用旧卡的实机结论；新卡安装和首启仍待用户，不能写成维护者从空白卡通过，第三方独立复现仍未验证。
+
+Earlier one-device evidence, not R4 acceptance: DP3 on 2026-11-15 restored boot text, removed the reported boot PLL-lock error and passed six screen cycles at intervals of at least 3 s (maintainer H + R record); rapid-toggle stripes remain. VR1 vibration passed three 300 ms pulses (H + R). The shared-SDAM RTC hypothesis failed with a 2053 wall clock while its gate stayed read-only; it was reverted. Bundle `20261102-37` uses the original p2 offset services and the maintainer reports normal time (H). / 以上属于旧卡，R4 新卡仍须逐项验收。
 
 ## Rebuilt baseline / 新工程基线
 
