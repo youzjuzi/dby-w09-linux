@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Update the charging indicator
+Requires=dby-w09-charge-led-off.service
+After=dby-w09-charge-led-off.service
+
+[Service]
+Type=oneshot
+ExecStart=/run/dby-device/bin/dby-w09-charge-led

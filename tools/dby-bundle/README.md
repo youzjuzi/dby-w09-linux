@@ -153,6 +153,11 @@ GNOME switching and reboot persistence passed on one tablet (H + R, 2026-11-15).
 gadget uses kernel-generated addresses and no serial string; its network matches
 `usb0` by name. No fixed device identity is embedded in public sources.
 
+The charging indicator overlay uses a oneshot helper triggered by charger/fuel-gauge
+uevents, LED registration and a 60-second timer; a separate shutdown unit turns
+both LEDs off after updates stop. Red/green brightness ratios (70/255, 120/255)
+come from the owner-supplied runtime FDT. Offline only; device validation pending.
+
 The initramfs retains the read-only p1/device image and module binding contract.
 After chroot, before `/sbin/init`, it reads the bounded seed file on read-only p1.
 Case-insensitive `[system] safe_mode=true` writes only the tmpfs

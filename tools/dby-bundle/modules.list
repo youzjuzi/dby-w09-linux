@@ -25,6 +25,10 @@ kernel/drivers/net/wireless/ath/ath11k/ath11k_pci.ko
 kernel/drivers/rtc/rtc-pm8xxx.ko
 kernel/drivers/input/misc/gpio-vibra.ko
 kernel/drivers/input/ff-memless.ko
+# PM8150L charging indicator and its module dependencies.
+kernel/drivers/leds/rgb/leds-qcom-lpg.ko
+kernel/drivers/leds/led-class-multicolor.ko
+kernel/drivers/soc/qcom/qcom-pbs.ko
 kernel/drivers/i2c/busses/i2c-qcom-geni.ko
 kernel/drivers/media/cec/core/cec.ko
 kernel/drivers/power/reset/qcom-pon.ko

@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-only
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="dby-chg|dby-fg", RUN+="/usr/bin/systemctl --no-block start dby-w09-charge-led.service"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="red:charging", RUN+="/usr/bin/systemctl --no-block start dby-w09-charge-led.service"
