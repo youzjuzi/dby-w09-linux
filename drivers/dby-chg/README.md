@@ -37,7 +37,7 @@ Those earlier device observations do not validate the new input-current control 
 
 | Block | Owner | Boundary |
 |---|---|---|
-| PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; `0x1370` input-current limit and `0x1344` fixed-PD voltage allowance are managed by `dby-chg` |
+| PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; `0x1370` input-current limit, `0x1344` voltage allowance and `0x1342/0x1366` ICL override/options are managed by `dby-chg` |
 | `0x11` DCDC/OTG | Upstream `qcom,pm8150b-vbus-reg` | Charger does not access it |
 | `0x15` Type-C, `0x17` PD PHY | Upstream `qcom_pmic_tcpm` | Future charger integration reads standard power_supply/role information |
 | `0x40`–`0x43` FG | `dby-fg` | Read-only fuel gauge; `msoc-delta` IRQ requested only by `dby-fg` |
@@ -70,7 +70,8 @@ The four original fixed charger write call sites remain unchanged:
 
 The additional `1370` ICL write site is shared by runtime changes and bounded
 restoration, with a hard range check `0x0A..0x28`. The `1344` allowance site
-accepts only `00` (firmware default) or `02` (FORCE_9V). Constants have compile-time
+accepts only `00` (firmware default) or `02` (FORCE_9V). The new `1342` site
+accepts only `00/01`, and `1366` only `02/01` (automatic/override). Constants have compile-time
 assertions. No watchdog configuration or other charger register is written. Standard ADC5 measurements perform
 the provider's own ADC and EOC operations. Do not run concurrent charger
 experiments or other register writers.
@@ -162,8 +163,8 @@ identity/regmap and reads exactly 00 immediately before the write, then verifies
 01. This one exit attempt is explicitly exempt from runtime spacing/budget;
 there is no retry. If the latest evaluation disallowed charging, or management
 has stopped on a fault, it leaves enable unchanged and logs why. Unowned initial
-00 is never restored by remove. Shutdown stops work, extinguishes both LED triggers and restores only ICL
-`1344=00` then `1370=1E`; it does not write enable, float or watchdog registers.
+00 is never restored by remove. Shutdown stops work, extinguishes both LED triggers and restores the input controls in order:
+`1344=00`, `1342=00`, `1366=02`, `1370=1E`; it does not write enable, float or watchdog registers.
 
 The freezable queue does not pet during suspend. Unload, shutdown and faults
 stop pets; the inherited watchdog remains active. After an actual watchdog
@@ -223,16 +224,16 @@ done
 喂狗，读失败停喂，写失败永久停止管理。运行期严格遵守30秒间隔与滑动小时12次
 预算；等待间隔期间实际充电状态可能尚未改变。卸载只在最近评估允许充电且拥有
 停充状态时尝试恢复一次，允许这一次间隔/预算例外，失败不重试；不允许则保持
-禁用并记录日志；shutdown 依次恢复 1344=00、1370=1E，不写原有充电控制寄存器。故障咬合后仍需重新插线。单独使能位实验有
+禁用并记录日志；shutdown 依次恢复 1344=00、1342=00、1366=02、1370=1E，不写原有充电控制寄存器。故障咬合后仍需重新插线。单独使能位实验有
 实机证据；整合版已在一台设备自动加载并通过桌面标示、停充/恢复与插拔测试（H + R，
 2026-11-05），**但未连续运行数日，长期风险未知**；自然FULL/再充电、挂起、
 多温度点与卸载恢复例外仍未验证。电脑口约 500 mA，屏亮时可能净放电。
 
 ## Source and risk disclosure / 来源与风险披露
 
-This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The charger register addresses written are `0x1070/0x1643/0x1042` at the four original call sites, plus bounded `0x1370` and `0x1344`, each at one shared call site; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
+This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The charger register addresses written are `0x1070/0x1643/0x1042` at the four original call sites, plus bounded `0x1370/0x1344/0x1342/0x1366`, each at one shared call site; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
 
-项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址为 `0x1070/0x1643/0x1042`（原四处调用）及 `0x1370/0x1344`（各一个受限调用点），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，本轮固定 9 V 候选仍待验证，电脑 USB 口屏亮时可能净放电。
+项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址为 `0x1070/0x1643/0x1042`（原四处调用）及 `0x1370/0x1344/0x1342/0x1366`（各一个受限调用点），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，本轮固定 9 V 候选仍待验证，电脑 USB 口屏亮时可能净放电。
 
 ## Kernel charge indicator / 内核充电指示灯
 
@@ -268,43 +269,48 @@ Fixed PD means supplier `ONLINE == 1` and USB_TYPE is `PD`, `PD_PPS`,
 a PPS-capable source can still supply a fixed PDO. Active PPS/AVS (`ONLINE`
 2/3) is not managed or requested. Type `C` with ONLINE 1 remains non-PD.
 
-| Observation | ICL target at `0x1370` (50 mA per step) | Allowance at `0x1344` |
-|---|---|---|
-| Confirmed online → offline | Restore firmware `0x1E` (1.5 A) | `00` |
-| Stable offline / OTG, or USB state unreadable | No ICL write | `00` |
-| Online, supplier offline/unreadable or invalid/nonpositive contract values | No ICL change | `00` except confirmed fixed PD >=8.5 V; see ordering below |
-| Online Type-C, Rp current >=3 A | `0x28` (2.0 A) | `00` |
-| Online Type-C, other Rp | `0x1E` (1.5 A) | `00` |
-| Online fixed PD, voltage >=8.5 V | min(contract current, 1.5 A) / 50 mA | `02` (FORCE_9V), after ICL readback |
-| Online fixed PD, exactly 5 V contract | min(contract current, 2.0 A) / 50 mA | `00` |
-| Active PPS/AVS, unknown source type, or other PD voltage below 8.5 V | No ICL change | `00` |
+| Observation | ICL target at `0x1370` (50 mA per step) | `0x1344` | Override `1342/1366` |
+|---|---|---|---|
+| Confirmed online → offline | Restore firmware `1E` | `00` | Off: `00/02` |
+| Stable offline / OTG, or USB state unreadable | No ICL write | `00` | Off: `00/02` |
+| Supplier offline/unreadable or invalid/nonpositive contract values | No ICL change | `00` | Off: `00/02` |
+| Online Type-C, Rp current >=3 A | `28` (2.0 A) | `00` | On: `01/01` |
+| Online Type-C, Rp >=1.5 A and <3 A | `1E` (1.5 A) | `00` | On: `01/01` |
+| Online Type-C, default Rp / PC port (<1.5 A) | No target; automatic mode | `00` | Off: `00/02` |
+| Online fixed PD, voltage >=8.5 V | min(contract current, 1.5 A) / 50 mA | `02` | On: `01/01` |
+| Online fixed PD, exactly 5 V (including 0.5 A standby) | min(contract current, 2.0 A) / 50 mA | `00` | On: `01/01` |
+| Active PPS/AVS, unknown source, other PD voltage below 8.5 V | No ICL change | `00` | Off: `00/02` |
 
-PD targets round down to 50 mA steps and clamp to `0x0A..0x28`. This preserves
-the inherited 1.5 A setting on a PC port; it is not a general USB current-limit
-algorithm for other boards. AICL may settle below the requested limit.
-Before allowing 9 V, the driver applies and verifies the contract's ICL first;
-an invalid/missing current target or failed ICL read prevents the allowance
-write. Leaving 9 V clears `1344=00` before restoring/raising ICL. Each setter
-checks identity/regmap, reads the current byte, skips equal values and verifies
-writeback. A failed first operation prevents the second normal operation.
-Pre-write read failure does not authorize a write and preserves a pending
-unplug transition for a later existing evaluation.
+PD targets round down to 50 mA steps and clamp to `0A..28`. Default Rp yields
+no target, keeping PC ports in firmware automatic mode instead of forcing
+1.5 A. AICL may settle below a requested limit. This is a bounded board policy,
+not a general current-limit algorithm for other hardware.
 
-Write/readback failure increments `write_errors` and the shared ICL error
-counter, latches **only ICL/allowance management**, then attempts `1344=00`
-followed by `1370=1E`, once each. Both recovery operations are attempted even
-if the first fails; failed reads consume the recovery opportunity too. Later
-events/unplug/remove/shutdown cannot retry the recovery pair. Normal remove
-and shutdown use the same ordered pair; a failed exit restore is itself the
-single recovery attempt. Enable/temperature/FULL policy, toggle budget and
-watchdog pet gates are unchanged.
+Enabling override applies `1370=target`, then `1366=01`, then `1342=01`; only
+after all three succeed may a 9 V contract set `1344=02`. On a managed 5 V
+contract, any previous 9 V allowance is cleared first. With override already
+on, unchanged option/override bytes are read and skipped; a changed target
+only writes ICL (and allowance if the voltage changes). Disabling follows
+`1344=00` → `1342=00` → `1366=02`; confirmed unplug then restores `1370=1E`.
+Stable OTG with default bytes performs no writes.
 
-Summary/event logs and debugfs include `icl_reg`, `allow_reg`, `src`,
-`contract_mv`, `contract_ma`, `icl_writes`, `allow_writes`, errors and the shared
-latch. Write counters count attempts. `icl_read_error` / `allow_read_error`
-mark stale register bytes; `supplier_error` and `supplier_online` distinguish
-unavailable contracts. Successful recovery can clear the current error fields
-while the stopped flag and cumulative errors remain latched.
+Every step checks identity/regmap, reads before writing, skips equal bytes,
+and reads back writes. Any step failure, including a pre-write read failure,
+stops the normal sequence and latches **only input-current management**.
+Recovery attempts `1344=00` → `1342=00` → `1366=02` → `1370=1E`, once each,
+even when an earlier recovery step fails. Failed recovery reads also consume
+the opportunity. Later events/unplug/remove/shutdown cannot retry it. Normal
+remove/shutdown use the same ordered recovery sequence. Enable/temperature/
+FULL policy, toggle budget and watchdog pet gates are unchanged.
+
+Summary/event logs and debugfs include `icl_reg`, `allow_reg`, `ovr_reg`,
+`opt_reg`, their write-attempt counters, `src`, contract values, per-register
+read/operation errors and the shared latch. `icl_management_errors` counts
+failed input-control operations (including identity/pre-read failures);
+aggregate `write_errors` counts failed writes/readback only. Read-error fields
+mark stale bytes. Supplier read failure selects automatic mode without itself
+latching management. Successful recovery can clear current operation errors
+while the stopped flag and cumulative error count remain latched.
 
 Device results supplied for the 2026-11-15 predecessor: a non-PD Rp 3 A charger
 reached `1370=28`, AICL status `28`, about +0.94 A battery current with the screen
@@ -316,11 +322,22 @@ The source advertised PPS and was incorrectly classified as unknown, retaining
 ICL `28`. These observations motivate fixed-contract classification and the
 bounded FORCE_9V override, following the stock smb5 allowance flow.
 
-**The FORCE_9V fix is an offline candidate; successful 9 V charging is still
-unverified.** No APSD/BC1.2/HC control, fast-charge current (`1061`), watchdog
-configuration or other allowance values are written. If 9 V still fails to
-charge, unplug and stop for review. 9 V/2 A is a possible later experiment,
-not implemented; no Huawei 22.5 W protocol is implemented.
+The subsequent FORCE_9V candidate charged from 81% to 88% in 15 minutes at
+9 V/1.5 A, with reported battery temperature 26.9–29.3 C, no hard resets and
+no write errors. However, `1370=1E` did not constrain the input: ICL status
+`1107..1109=2C` indicated about 2.2 A with automatic `1342=00 / 1366=02`.
+The owner stock comparison used `1342=01 / 1366=01 / 1370=1E` with status
+`1A`. These supplied device observations motivate the explicit override and
+high-current option, consistent with the stock smb5 ICL override flow. The
+old non-PD 5 V result happened to follow `1370` in automatic mode and did not
+prove 9 V limiting.
+
+**The ICL override fix remains an offline candidate.** Actual 9 V input
+limiting to status `1E`, continued charging, unplug/PC/OTG behavior and errors
+need device validation. No `1340/1341`, `1362`, fast-charge current (`1061`),
+watchdog configuration or other allowance values are written. 9 V/2 A remains
+a possible later experiment, not implemented; no Huawei 22.5 W protocol is
+implemented.
 
 Acknowledgements: the owner stock `smb5-lib.c` flow and a community Type-C PD
 proposal based on the CoWave kernel informed the approach. The community
@@ -328,6 +345,6 @@ proposal has no established licence declaration here; no implementation code
 was copied. This driver uses independently written standard power-supply API
 integration and the bounded board policy above.
 
-本轮仅为离线修正候选（O）：保留 5 V/2 A、9 V/1.5 A PDO；按 ONLINE 区分
-固定合同和 PPS/AVS，新增 1344=00/02。进入 9 V 先设限流，退出先清覆盖；两项
-共用故障锁存并各恢复一次。9 V/2 A 未做，实际充电和温度仍待用户验收。
+本轮仅为离线修正候选（O）：保留 5 V/2 A、9 V/1.5 A PDO；明确 Rp/固定 PD
+目标才开启 1342/1366 覆盖，电脑口默认 Rp 保持自动模式。四项输入控制共用锁存，
+按固定顺序各恢复一次。9 V/2 A 未做，实际限流与回归效果待用户验收。

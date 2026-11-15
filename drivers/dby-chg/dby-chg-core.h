@@ -106,6 +106,12 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_ALLOW_REG 0x1344u
 #define DBY_CHG_ALLOW_DEFAULT 0x00u
 #define DBY_CHG_ALLOW_9V 0x02u
+#define DBY_CHG_OVR_REG 0x1342u
+#define DBY_CHG_OVR_DEFAULT 0x00u
+#define DBY_CHG_OVR_ON 0x01u
+#define DBY_CHG_OPT_REG 0x1366u
+#define DBY_CHG_OPT_DEFAULT 0x02u
+#define DBY_CHG_OPT_ON 0x01u
 enum dby_chg_source { CHG_SRC_UNKNOWN, CHG_SRC_C, CHG_SRC_PD };
 static inline unsigned int dby_chg_allow_target(int online, int source_online,
  enum dby_chg_source source, int voltage_uv)
@@ -124,8 +130,11 @@ static inline unsigned int dby_chg_icl_target(int online, int was_online,
  if (online == 0) return was_online == 1 ? DBY_CHG_ICL_DEFAULT : 0;
  if (online != 1 || source_online != 1 || voltage_uv <= 0 || current_ua <= 0)
   return 0;
- if (source == CHG_SRC_C)
+ if (source == CHG_SRC_C) {
+  /* Default Rp / PC ports keep firmware automatic current selection. */
+  if (current_ua < 1500000) return 0;
   return current_ua >= 3000000 ? DBY_CHG_ICL_MAX : DBY_CHG_ICL_DEFAULT;
+ }
  if (source != CHG_SRC_PD) return 0;
  if (voltage_uv < 8500000 && voltage_uv != 5000000) return 0;
  limit = voltage_uv >= 8500000 ? DBY_CHG_ICL_9V_MAX_UA : DBY_CHG_ICL_MAX_UA;

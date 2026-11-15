@@ -46,6 +46,8 @@ MODULE_PARM_DESC(temp_max_decic, "Test upper temperature bound, 150..420 deciC")
 struct dby_chg_icl {
 	unsigned int reg, writes, errors;
 	unsigned int allow_reg, allow_writes;
+	unsigned int ovr_reg, ovr_writes, opt_reg, opt_writes;
+	int ovr_read_error, ovr_error, opt_read_error, opt_error;
 	int allow_read_error, allow_error;
 	int read_error, error, supplier_error, source_online, voltage_uv, current_ua;
 	int last_online;
@@ -258,8 +260,13 @@ static int chg_icl_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	if (!ret)
 		ret = regmap_read(chg->map, DBY_CHG_ICL_REG, &icl->reg);
 	icl->read_error = ret;
-	if (ret || icl->reg == target)
+	if (ret) {
+		icl->errors++;
+		icl->stopped = true;
 		return ret;
+	}
+	if (icl->reg == target)
+		return 0;
 	icl->writes++;
 	ret = regmap_write(chg->map, DBY_CHG_ICL_REG, target);
 	if (!ret) {
@@ -295,8 +302,13 @@ static int chg_allow_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	if (!ret)
 		ret = regmap_read(chg->map, DBY_CHG_ALLOW_REG, &icl->allow_reg);
 	icl->allow_read_error = ret;
-	if (ret || icl->allow_reg == target)
+	if (ret) {
+		icl->errors++;
+		icl->stopped = true;
 		return ret;
+	}
+	if (icl->allow_reg == target)
+		return 0;
 	icl->allow_writes++;
 	ret = regmap_write(chg->map, DBY_CHG_ALLOW_REG, target);
 	if (!ret) {
@@ -314,14 +326,98 @@ static int chg_allow_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	}
 	return ret;
 }
+/* operation_lock held; 0x1342 accepts only its default and ON values. */
+static int chg_ovr_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
+			 unsigned int target)
+{
+	struct dby_chg_icl *icl = &s->icl;
+	int ret;
+
+	BUILD_BUG_ON(DBY_CHG_OVR_REG != 0x1342 ||
+		     DBY_CHG_OVR_DEFAULT != 0x00 || DBY_CHG_OVR_ON != 0x01);
+	if (target != DBY_CHG_OVR_DEFAULT && target != DBY_CHG_OVR_ON)
+		return -EINVAL;
+	ret = chg_identity(chg);
+	if (!ret && dev_get_regmap(chg->dev->parent, NULL) != chg->map)
+		ret = -ENODEV;
+	if (!ret)
+		ret = regmap_read(chg->map, DBY_CHG_OVR_REG, &icl->ovr_reg);
+	icl->ovr_read_error = ret;
+	if (ret) {
+		icl->errors++;
+		icl->stopped = true;
+		return ret;
+	}
+	if (icl->ovr_reg == target)
+		return 0;
+	icl->ovr_writes++;
+	ret = regmap_write(chg->map, DBY_CHG_OVR_REG, target);
+	if (!ret) {
+		ret = regmap_read(chg->map, DBY_CHG_OVR_REG, &icl->ovr_reg);
+		icl->ovr_read_error = ret;
+		if (!ret && icl->ovr_reg != target)
+			ret = -EIO;
+	} else {
+		icl->ovr_read_error = ret;
+	}
+	if (ret) {
+		s->write_errors++;
+		icl->errors++;
+		icl->stopped = true;
+	}
+	return ret;
+}
+/* operation_lock held; 0x1366 accepts only its default and ON values. */
+static int chg_opt_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
+			 unsigned int target)
+{
+	struct dby_chg_icl *icl = &s->icl;
+	int ret;
+
+	BUILD_BUG_ON(DBY_CHG_OPT_REG != 0x1366 ||
+		     DBY_CHG_OPT_DEFAULT != 0x02 || DBY_CHG_OPT_ON != 0x01);
+	if (target != DBY_CHG_OPT_DEFAULT && target != DBY_CHG_OPT_ON)
+		return -EINVAL;
+	ret = chg_identity(chg);
+	if (!ret && dev_get_regmap(chg->dev->parent, NULL) != chg->map)
+		ret = -ENODEV;
+	if (!ret)
+		ret = regmap_read(chg->map, DBY_CHG_OPT_REG, &icl->opt_reg);
+	icl->opt_read_error = ret;
+	if (ret) {
+		icl->errors++;
+		icl->stopped = true;
+		return ret;
+	}
+	if (icl->opt_reg == target)
+		return 0;
+	icl->opt_writes++;
+	ret = regmap_write(chg->map, DBY_CHG_OPT_REG, target);
+	if (!ret) {
+		ret = regmap_read(chg->map, DBY_CHG_OPT_REG, &icl->opt_reg);
+		icl->opt_read_error = ret;
+		if (!ret && icl->opt_reg != target)
+			ret = -EIO;
+	} else {
+		icl->opt_read_error = ret;
+	}
+	if (ret) {
+		s->write_errors++;
+		icl->errors++;
+		icl->stopped = true;
+	}
+	return ret;
+}
 static void chg_icl_restore(struct dby_chg *chg, struct dby_chg_snapshot *s)
 {
-	/* One ordered recovery pair, including failed reads. Attempt both even
-	 * if clearing allowance fails; later events/exit cannot retry either. */
+	/* One ordered recovery sequence, including failed reads. Each setter
+	 * is attempted once even if earlier steps fail; no later retries. */
 	if (s->icl.recovery_attempted)
 		return;
 	s->icl.recovery_attempted = true;
 	s->icl.allow_error = chg_allow_set(chg, s, DBY_CHG_ALLOW_DEFAULT);
+	s->icl.ovr_error = chg_ovr_set(chg, s, DBY_CHG_OVR_DEFAULT);
+	s->icl.opt_error = chg_opt_set(chg, s, DBY_CHG_OPT_DEFAULT);
 	s->icl.error = chg_icl_set(chg, s, DBY_CHG_ICL_DEFAULT);
 }
 static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
@@ -335,32 +431,46 @@ static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
 	icl->read_error = s->sample.identity_error ?: regmap_read(chg->map, DBY_CHG_ICL_REG, &icl->reg);
 	icl->allow_read_error = s->sample.identity_error ?:
 		regmap_read(chg->map, DBY_CHG_ALLOW_REG, &icl->allow_reg);
+	icl->ovr_read_error = s->sample.identity_error ?:
+		regmap_read(chg->map, DBY_CHG_OVR_REG, &icl->ovr_reg);
+	icl->opt_read_error = s->sample.identity_error ?:
+		regmap_read(chg->map, DBY_CHG_OPT_REG, &icl->opt_reg);
 	if (icl->stopped)
 		return;
 	target = dby_chg_icl_target(online, icl->last_online,
 		icl->source_online, icl->source, icl->voltage_uv, icl->current_ua);
 	allow = dby_chg_allow_target(online, icl->source_online,
 		icl->source, icl->voltage_uv);
-	if (allow == DBY_CHG_ALLOW_9V) {
-		/* Never accept 9 V before the contract's ICL is read back. */
-		if (!target)
-			return;
-		ret = icl->error = chg_icl_set(chg, s, target);
+	if (online == 1 && target) {
+		/* Clear a previous 9 V allowance before raising a 5 V limit. */
+		ret = 0;
+		if (allow == DBY_CHG_ALLOW_DEFAULT)
+			ret = icl->allow_error = chg_allow_set(chg, s, allow);
 		if (!ret)
+			ret = icl->error = chg_icl_set(chg, s, target);
+		if (!ret)
+			ret = icl->opt_error = chg_opt_set(chg, s, DBY_CHG_OPT_ON);
+		if (!ret)
+			ret = icl->ovr_error = chg_ovr_set(chg, s, DBY_CHG_OVR_ON);
+		/* Never accept 9 V before current and override are read back. */
+		if (!ret && allow == DBY_CHG_ALLOW_9V)
 			ret = icl->allow_error = chg_allow_set(chg, s, allow);
 	} else {
-		/* Leave 9 V first, before restoring/raising the input limit. */
-		ret = icl->allow_error = chg_allow_set(chg, s, allow);
-		if (!ret && target)
+		ret = icl->allow_error = chg_allow_set(chg, s, DBY_CHG_ALLOW_DEFAULT);
+		if (!ret)
+			ret = icl->ovr_error = chg_ovr_set(chg, s, DBY_CHG_OVR_DEFAULT);
+		if (!ret)
+			ret = icl->opt_error = chg_opt_set(chg, s, DBY_CHG_OPT_DEFAULT);
+		if (!ret && online == 0 && target)
 			ret = icl->error = chg_icl_set(chg, s, target);
 	}
-	/* Keep an unhandled unplug transition across transient read failures. */
+	/* Record a handled transition or a terminal management failure. */
 	if (online >= 0 && (!ret || icl->stopped))
 		icl->last_online = online;
 	if (icl->stopped) {
 		chg_icl_restore(chg, s);
-		dev_warn(chg->dev, "ICL/allowance management stopped: error=%d recovery_allow_error=%d recovery_icl_error=%d; charger control unchanged\n",
-			 ret, icl->allow_error, icl->error);
+		dev_warn(chg->dev, "ICL/allowance management stopped: error=%d recovery_allow_error=%d recovery_ovr_error=%d recovery_opt_error=%d recovery_icl_error=%d; charger control unchanged\n",
+			 ret, icl->allow_error, icl->ovr_error, icl->opt_error, icl->error);
 	}
 }
 /* Keep the fixed write operands visible as separate audited call sites. */
@@ -476,12 +586,13 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		 old.state.full, s.state.full, old.reason, s.reason) ||
 		old.sample.reg[CHG_ENABLE] != s.sample.reg[CHG_ENABLE] ||
 		old.icl.reg != s.icl.reg || old.icl.allow_reg != s.icl.allow_reg ||
+		old.icl.ovr_reg != s.icl.ovr_reg || old.icl.opt_reg != s.icl.opt_reg ||
 		old.icl.source != s.icl.source ||
 		old.icl.voltage_uv != s.icl.voltage_uv || old.icl.current_ua != s.icl.current_ua ||
 		old.icl.errors != s.icl.errors;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
@@ -489,7 +600,9 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 			s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
 			s.icl.current_ua / 1000, s.icl.writes, s.icl.stopped,
 			s.icl.read_error, s.icl.error, s.icl.allow_reg, s.icl.allow_writes,
-			s.icl.allow_read_error, s.icl.allow_error);
+			s.icl.allow_read_error, s.icl.allow_error,
+			s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
+			s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error);
 	if (summary)
 		chg->last_log_ms = s.sampled_ms;
 	/* Suspend stops petting. After a watchdog bite, USB must be replugged
@@ -633,13 +746,16 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 	seq_printf(seq, "reason_mask=%#x feeding=%u full=%u qualifying_samples=%u attempts=%u pets=%u write_errors=%u last_write_error=%d\n",
 		s.reason, s.feeding && !READ_ONCE(chg->stopping), s.state.full, s.state.qualifying,
 		s.attempts, s.pets, s.write_errors, s.write_error);
-	seq_printf(seq, "icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_write_errors=%u icl_stopped=%u icl_recovery_attempted=%u icl_read_error=%d icl_error=%d supplier_online=%d supplier_error=%d\n",
+	seq_printf(seq, "icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_management_errors=%u icl_stopped=%u icl_recovery_attempted=%u icl_read_error=%d icl_error=%d supplier_online=%d supplier_error=%d\n",
 		s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
 		s.icl.current_ua / 1000, s.icl.writes, s.icl.errors, s.icl.stopped,
 		s.icl.recovery_attempted, s.icl.read_error, s.icl.error,
 		 s.icl.source_online, s.icl.supplier_error);
 	seq_printf(seq, "allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d\n",
 		s.icl.allow_reg, s.icl.allow_writes, s.icl.allow_read_error, s.icl.allow_error);
+	seq_printf(seq, "ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d\n",
+		s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
+		s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error);
 	dby_chg_prune(&s.control, now);
 	seq_printf(seq, "enable_reg=%02x want_enable=%u toggles_last_hour=%u toggle_budget_remaining=%u last_toggle_ms=%llu manage_stopped_reason=%#x owned_off=%u\n",
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
@@ -693,6 +809,8 @@ static int chg_probe(struct platform_device *pdev)
 	chg->latest.icl.last_online = -1;
 	chg->latest.icl.read_error = -ENODATA;
 	chg->latest.icl.allow_read_error = -ENODATA;
+	chg->latest.icl.ovr_read_error = -ENODATA;
+	chg->latest.icl.opt_read_error = -ENODATA;
 	chg->start_ms = div_u64(ktime_get_boottime_ns(), NSEC_PER_MSEC);
 	config.drv_data = chg;
 	config.fwnode = dev_fwnode(dev);
@@ -753,9 +871,11 @@ static void chg_stop(struct platform_device *pdev)
 	mutex_lock(&chg->operation_lock);
 	s = chg_snapshot(chg);
 	chg_icl_restore(chg, &s);
-	dev_info(chg->dev, "exit ICL/allowance restore: icl_reg=%02x icl_writes=%u icl_stopped=%u icl_error=%d allow_reg=%02x allow_writes=%u allow_error=%d write_errors=%u\n",
+	dev_info(chg->dev, "exit ICL/allowance restore: icl_reg=%02x icl_writes=%u icl_stopped=%u icl_error=%d allow_reg=%02x allow_writes=%u allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_error=%d opt_error=%d write_errors=%u\n",
 		 s.icl.reg, s.icl.writes, s.icl.stopped, s.icl.error,
-		 s.icl.allow_reg, s.icl.allow_writes, s.icl.allow_error, s.write_errors);
+		 s.icl.allow_reg, s.icl.allow_writes, s.icl.allow_error,
+		 s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
+		 s.icl.ovr_error, s.icl.opt_error, s.write_errors);
 	s.feeding = false;
 	s.reason |= CHG_STOPPING;
 	dby_chg_pause_update(&s.pause, dby_chg_online(&s.sample), false, chg_now(chg));
