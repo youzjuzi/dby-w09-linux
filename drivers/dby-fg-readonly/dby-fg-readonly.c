@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* DBY-W09: passive PM8150B FG gen4 samples; never initialize the gauge. */
+#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -8,6 +9,11 @@
 #include <soc/qcom/qcom-spmi-pmic.h>
 
 #include "dby-fg-core.h"
+
+struct dby_fg {
+	struct regmap *map;
+	struct power_supply *psy;
+};
 
 static int dby_fg_read(void *context, unsigned int reg, u8 *buf,
 		       unsigned int count)
@@ -37,6 +43,7 @@ static enum power_supply_property dby_fg_properties[] = {
 static int dby_fg_get(struct power_supply *psy, enum power_supply_property prop,
 		      union power_supply_propval *val)
 {
+	struct dby_fg *fg = power_supply_get_drvdata(psy);
 	int item;
 	struct power_supply *charger;
 
@@ -62,7 +69,7 @@ static int dby_fg_get(struct power_supply *psy, enum power_supply_property prop,
 	default:
 		return -EINVAL;
 	}
-	return dby_fg_sample(dby_fg_read, power_supply_get_drvdata(psy),
+	return dby_fg_sample(dby_fg_read, fg->map,
 			     item, &val->intval);
 }
 
@@ -74,15 +81,22 @@ static const struct power_supply_desc dby_fg_desc = {
 	.get_property = dby_fg_get,
 };
 
+static irqreturn_t dby_fg_msoc_delta(int irq, void *data)
+{
+	struct dby_fg *fg = data;
+
+	power_supply_changed(fg->psy);
+	return IRQ_HANDLED;
+}
+
 static int dby_fg_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	const struct qcom_spmi_pmic *pmic;
 	struct power_supply_config config = {};
-	struct power_supply *psy;
-	struct regmap *map;
+	struct dby_fg *fg;
 	u32 windows[2];
-	int ret;
+	int irq, ret;
 
 	if (of_property_count_u32_elems(dev->of_node, "reg") != 2)
 		return -EINVAL;
@@ -98,15 +112,29 @@ static int dby_fg_probe(struct platform_device *pdev)
 	if (!dby_fg_revision(pmic->type, pmic->subtype, pmic->major,
 			     pmic->minor, pmic->rev2))
 		return dev_err_probe(dev, -ENODEV, "dby-fg: unsupported revision\n");
-	map = dev_get_regmap(dev->parent, NULL);
-	if (!map)
+	fg = devm_kzalloc(dev, sizeof(*fg), GFP_KERNEL);
+	if (!fg)
+		return -ENOMEM;
+	fg->map = dev_get_regmap(dev->parent, NULL);
+	if (!fg->map)
 		return -EPROBE_DEFER;
-	config.drv_data = map;
+	irq = platform_get_irq_byname_optional(pdev, "msoc-delta");
+	if (irq == -EPROBE_DEFER)
+		return irq;
+	config.drv_data = fg;
 	config.fwnode = dev_fwnode(dev);
-	psy = devm_power_supply_register(dev, &dby_fg_desc, &config);
-	if (IS_ERR(psy))
-		return dev_err_probe(dev, PTR_ERR(psy), "dby-fg: register failed\n");
-	dev_info(dev, "dby-fg: passive read-only gauge registered; status Unknown\n");
+	fg->psy = devm_power_supply_register(dev, &dby_fg_desc, &config);
+	if (IS_ERR(fg->psy))
+		return dev_err_probe(dev, PTR_ERR(fg->psy), "dby-fg: register failed\n");
+	if (irq < 0) {
+		dev_info(dev, "dby-fg: msoc-delta IRQ unavailable; using existing notifications\n");
+	} else {
+		ret = devm_request_threaded_irq(dev, irq, NULL, dby_fg_msoc_delta,
+					IRQF_ONESHOT, "msoc-delta", fg);
+		if (ret)
+			return dev_err_probe(dev, ret, "dby-fg: cannot request msoc-delta IRQ\n");
+	}
+	dev_info(dev, "dby-fg: passive read-only gauge registered\n");
 	return 0;
 }
 

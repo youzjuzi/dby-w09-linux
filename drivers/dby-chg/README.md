@@ -40,7 +40,7 @@ No fast charging, PD negotiation or input-current control is claimed.
 | PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; this revision uses three IRQs |
 | `0x11` DCDC/OTG | Upstream `qcom,pm8150b-vbus-reg` | Charger does not access it |
 | `0x15` Type-C, `0x17` PD PHY | Upstream `qcom_pmic_tcpm` | Future charger integration reads standard power_supply/role information |
-| `0x40`–`0x43` FG | `dby-fg` | Read-only fuel gauge; no FG IRQ in this revision |
+| `0x40`–`0x43` FG | `dby-fg` | Read-only fuel gauge; `msoc-delta` IRQ requested only by `dby-fg` |
 | PM8150L LPG | Upstream `leds-qcom-lpg` | Charger supplies LED trigger brightness only |
 | MT5727 (I2C) | Future independent driver | Reads battery capacity/temperature through power_supply; no direct charger calls |
 
