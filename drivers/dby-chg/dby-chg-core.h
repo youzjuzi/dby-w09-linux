@@ -99,9 +99,13 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_ICL_REG 0x1370u
 #define DBY_CHG_ICL_DEFAULT 0x1Eu
 #define DBY_CHG_ICL_MIN 0x0Au
-#define DBY_CHG_ICL_MAX 0x28u
+#define DBY_CHG_ICL_MAX 0x3Cu
+#define DBY_CHG_ICL_5V_MAX 0x28u
 #define DBY_CHG_ICL_MAX_UA 2000000
-#define DBY_CHG_ICL_9V_MAX_UA 1500000
+#define DBY_CHG_PD9V_DEFAULT_MA 1500
+#define DBY_CHG_PD9V_MAX_MA 3000
+#define DBY_CHG_THERMAL_STEP_MA 250
+#define DBY_CHG_THERMAL_RISE_MS 60000u
 #define DBY_CHG_ICL_STEP_UA 50000
 #define DBY_CHG_ALLOW_REG 0x1344u
 #define DBY_CHG_ALLOW_DEFAULT 0x00u
@@ -113,6 +117,52 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_OPT_DEFAULT 0x02u
 #define DBY_CHG_OPT_ON 0x01u
 enum dby_chg_source { CHG_SRC_UNKNOWN, CHG_SRC_C, CHG_SRC_PD };
+static inline int dby_chg_pd9v_valid(int ma)
+{
+ return ma == 1500 || ma == 2000 || ma == 2250 || ma == 2500 ||
+  ma == 2750 || ma == 3000;
+}
+struct dby_chg_thermal {
+ int cap_ma;
+ unsigned int drops, rises;
+ unsigned long long changed_ms;
+};
+/* Offline resets the ceiling. Parameter raises never erase a thermal cap.
+ * Invalid temperature samples fail safe; only cool samples permit a rise. */
+static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
+ int max_ma, int online, int batt_error, int batt_decic,
+ int chip_error, int chip_mc, unsigned long long now)
+{
+ int old, direction = 0;
+
+ if (online == 0) {
+  t->cap_ma = max_ma;
+  t->changed_ms = now;
+  return 0;
+ }
+ if (t->cap_ma > max_ma) {
+  t->cap_ma = max_ma;
+  t->changed_ms = now;
+ }
+ old = t->cap_ma;
+ if (batt_error || chip_error) {
+  t->cap_ma = DBY_CHG_PD9V_DEFAULT_MA;
+ } else if (batt_decic >= 380 || chip_mc >= 80000) {
+  t->cap_ma -= DBY_CHG_THERMAL_STEP_MA;
+  if (t->cap_ma < DBY_CHG_PD9V_DEFAULT_MA)
+   t->cap_ma = DBY_CHG_PD9V_DEFAULT_MA;
+ } else if (online == 1 && batt_decic <= 360 && chip_mc <= 70000 &&
+            now - t->changed_ms >= DBY_CHG_THERMAL_RISE_MS) {
+  t->cap_ma += DBY_CHG_THERMAL_STEP_MA;
+  if (t->cap_ma > max_ma) t->cap_ma = max_ma;
+ }
+ if (t->cap_ma != old) {
+  t->changed_ms = now;
+  if (t->cap_ma < old) { t->drops++; direction = -1; }
+  else { t->rises++; direction = 1; }
+ }
+ return direction;
+}
 static inline unsigned int dby_chg_allow_target(int online, int source_online,
  enum dby_chg_source source, int voltage_uv)
 {
@@ -122,7 +172,8 @@ static inline unsigned int dby_chg_allow_target(int online, int source_online,
 /* Zero means no target/write; only confirmed unplug transitions restore.
  * Contract/Rp values are micro-units from the standard supplier interface. */
 static inline unsigned int dby_chg_icl_target(int online, int was_online,
- int source_online, enum dby_chg_source source, int voltage_uv, int current_ua)
+ int source_online, enum dby_chg_source source, int voltage_uv, int current_ua,
+ int pd9v_max_ma, int thermal_cap_ma)
 {
  unsigned int target;
  int limit;
@@ -133,11 +184,19 @@ static inline unsigned int dby_chg_icl_target(int online, int was_online,
  if (source == CHG_SRC_C) {
   /* Default Rp / PC ports keep firmware automatic current selection. */
   if (current_ua < 1500000) return 0;
-  return current_ua >= 3000000 ? DBY_CHG_ICL_MAX : DBY_CHG_ICL_DEFAULT;
+  return current_ua >= 3000000 ? DBY_CHG_ICL_5V_MAX : DBY_CHG_ICL_DEFAULT;
  }
  if (source != CHG_SRC_PD) return 0;
  if (voltage_uv < 8500000 && voltage_uv != 5000000) return 0;
- limit = voltage_uv >= 8500000 ? DBY_CHG_ICL_9V_MAX_UA : DBY_CHG_ICL_MAX_UA;
+ limit = DBY_CHG_ICL_MAX_UA;
+ if (voltage_uv >= 8500000) {
+  if (!dby_chg_pd9v_valid(pd9v_max_ma) ||
+      thermal_cap_ma < DBY_CHG_PD9V_DEFAULT_MA)
+   return 0;
+  limit = pd9v_max_ma;
+  if (thermal_cap_ma < limit) limit = thermal_cap_ma;
+  limit *= 1000;
+ }
  if (current_ua < limit) limit = current_ua;
  target = limit / DBY_CHG_ICL_STEP_UA;
  if (target < DBY_CHG_ICL_MIN) target = DBY_CHG_ICL_MIN;

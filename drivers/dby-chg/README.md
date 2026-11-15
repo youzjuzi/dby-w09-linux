@@ -69,7 +69,8 @@ The four original fixed charger write call sites remain unchanged:
   the bounded remove recovery share this call site.
 
 The additional `1370` ICL write site is shared by runtime changes and bounded
-restoration, with a hard range check `0x0A..0x28`. The `1344` allowance site
+restoration, with a hard range check `0x0A..0x3C` (codes above `28` only for fixed PD
+>=8.5 V within the selected and thermal ceilings). The `1344` allowance site
 accepts only `00` (firmware default) or `02` (FORCE_9V). The new `1342` site
 accepts only `00/01`, and `1366` only `02/01` (automatic/override). Constants have compile-time
 assertions. No watchdog configuration or other charger register is written. Standard ADC5 measurements perform
@@ -202,7 +203,9 @@ summaries appear every ten minutes and failures are logged.
 ## Loading and host validation
 
 DT: PM8150B child `dby,pm8150b-charger`, `reg=<0x1000>`,
-`io-channels=<&pm8150b_adc ADC5_BAT_THERM_30K_PU>`, name `batt_therm`.
+IIO channels `batt_therm` (`ADC5_BAT_THERM_30K_PU`, microvolts) and `chg_temp`
+(`ADC5_CHG_TEMP`, processed millicelsius). Both providers are required at probe;
+the new module must be paired with the updated DTB.
 ADC unavailability defers probe before writes. FG is queried dynamically;
 missing FG inhibits operations until good reads arrive. Module-list order is
 not probe order, and a slow boot can still require USB replug.
@@ -252,8 +255,9 @@ confirmed; shutdown turn-off of the kernel-trigger LEDs has not been observed ye
 
 ## Type-C input current and fixed PD / 输入限流与固定 PD
 
-The board requests the owner stock sink capabilities: 5 V / 2 A and 9 V / 1.5 A,
-with 13.5 W operating sink power. Source PDOs and dual-role policy are unchanged.
+The board retains the owner stock 5 V / 2 A sink PDO and requests up to
+9 V / 3 A with 27 W operating sink power. The latter is a contract ceiling,
+not the default draw: the driver still defaults to 1.5 A at 9 V. Source PDOs and dual-role policy are unchanged.
 The charger links to the Type-C supply with standard `power-supplies`;
 `.external_power_changed` queues the existing work immediately without setting
 the two-second settle flag. An already pending IRQ settle deadline is preserved.
@@ -277,11 +281,12 @@ a PPS-capable source can still supply a fixed PDO. Active PPS/AVS (`ONLINE`
 | Online Type-C, Rp current >=3 A | `28` (2.0 A) | `00` | On: `01/01` |
 | Online Type-C, Rp >=1.5 A and <3 A | `1E` (1.5 A) | `00` | On: `01/01` |
 | Online Type-C, default Rp / PC port (<1.5 A) | No target; automatic mode | `00` | Off: `00/02` |
-| Online fixed PD, voltage >=8.5 V | min(contract current, 1.5 A) / 50 mA | `02` | On: `01/01` |
+| Online fixed PD, voltage >=8.5 V | min(contract, selected ceiling, thermal cap) / 50 mA | `02` | On: `01/01` |
 | Online fixed PD, exactly 5 V (including 0.5 A standby) | min(contract current, 2.0 A) / 50 mA | `00` | On: `01/01` |
 | Active PPS/AVS, unknown source, other PD voltage below 8.5 V | No ICL change | `00` | Off: `00/02` |
 
-PD targets round down to 50 mA steps and clamp to `0A..28`. Default Rp yields
+PD targets round down to 50 mA steps. 5 V targets remain at most `28` (2 A);
+only fixed PD >=8.5 V can use `29..3C` (up to 3 A). The overall range is `0A..3C`. Default Rp yields
 no target, keeping PC ports in firmware automatic mode instead of forcing
 1.5 A. AICL may settle below a requested limit. This is a bounded board policy,
 not a general current-limit algorithm for other hardware.
@@ -340,8 +345,8 @@ ICL status `1106..1109=1E`, charging, no hard reset. 3 A Rp charger: `src=C`,
 (`1106=0A`); net discharge with the screen on, as before. OTG receiver: offline,
 LEDs off, no writes. `write_errors=0` throughout. Earlier (bundle `-10`, before
 the override) a 15-minute 9 V run went 81→88% at 26.9–29.3 °C. No `1340/1341`, `1362`, fast-charge current (`1061`),
-watchdog configuration or other allowance values are written. 9 V/2 A remains
-a possible later experiment, not implemented; no Huawei 22.5 W protocol is
+watchdog configuration or other allowance values are written. Higher-current PD operation remains subject to the selected limit and thermal
+policy below; no Huawei 22.5 W protocol is
 implemented.
 
 Acknowledgements: the owner stock `smb5-lib.c` flow and a community Type-C PD
@@ -350,6 +355,45 @@ proposal has no established licence declaration here; no implementation code
 was copied. This driver uses independently written standard power-supply API
 integration and the bounded board policy above.
 
-本轮仅为离线修正候选（O）：保留 5 V/2 A、9 V/1.5 A PDO；明确 Rp/固定 PD
-目标才开启 1342/1366 覆盖，电脑口默认 Rp 保持自动模式。四项输入控制共用锁存，
-按固定顺序各恢复一次。9 V/2 A 未做，实际限流与回归效果待用户验收。
+## Fixed PD power ceiling and thermal derating
+
+`pd9v_max_ma` is a module parameter with mode `0644` (root writes). It accepts
+only `1500`, `2000`, `2250`, `2500`, `2750` or `3000`, default **1500**. Each
+accepted write schedules an immediate evaluation on the existing work queue,
+without setting an IRQ settle flag. Device registration/removal and scheduling
+are serialized; parameter writes cannot queue work after detach. No new poller
+or register write site is added.
+
+Each evaluation, including the existing 30-second cycle, reads charger
+millicelsius and battery temperature before the existing enable policy. The
+resulting ICL is applied in that evaluation. Thermal rules:
+
+- Battery >=38.0 C or charger >=80.0 C: lower the cap by 250 mA, floor 1500 mA.
+- Battery <=36.0 C and charger <=70.0 C: raise by 250 mA only after at least
+  60 seconds since the last cap change, never above the selected ceiling.
+- Charger read failure immediately caps at 1500 mA. Battery temperature read
+  failure is also treated conservatively; it cannot authorize a power increase.
+- Offline resets the cap to the selected ceiling. A lower parameter immediately
+  clamps the cap; raising it preserves an existing cap and the cool/60-second
+  recovery rule. Reset/parameter clamping update the time reference but do not
+  count as thermal drops/rises. Failed reads cannot authorize recovery.
+
+The original <12 C / >42 C battery stop gates and all enable/watchdog control
+remain unchanged. Logs/debugfs add `chg_temp_mc`, `chg_temp_error`,
+`pd9v_max_ma`, `thermal_cap_ma`, `thermal_drops`, `thermal_rises`; each actual
+thermal drop logs a separate line. Values in debugfs describe the last sample,
+while the module parameter reflects the requested ceiling immediately.
+
+The supplied device observation has thermal-source register `1570=00`;
+stock was observed as `ca` and once as `00`. Hardware thermal regulation is
+therefore **probably disabled**, with the stock discrepancy unresolved. This
+change does not enable it and never writes `1570`. Software sampling is not
+continuous hardware thermal protection. The >13.5 W ramp, actual input current,
+temperature behavior and sustainable default are unverified for this candidate.
+The separate device procedure stops at battery >=38 C, charger >=75 C, any
+thermal drop, hard reset or a hot enclosure; its charger stop threshold is
+intentionally lower than the 80 C software derating threshold.
+
+本轮为离线候选（O）：合同可声明 9 V/3 A，默认仍限 1.5 A；参数与温控共同
+限制实际 ICL。5 V 上限仍为 2 A，原停充/喂狗门禁不变，不写 1570。高功率爬档
+与温升由用户验收，离线构建不代表 27 W 已验证。

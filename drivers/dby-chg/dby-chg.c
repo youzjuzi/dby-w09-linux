@@ -4,6 +4,7 @@
 #include <linux/iio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/leds.h>
+#include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -43,6 +44,10 @@ module_param_cb(temp_max_decic, &chg_limit_ops, &temp_max_decic, 0600);
 MODULE_PARM_DESC(temp_min_decic, "Test lower temperature bound, 120..350 deciC");
 MODULE_PARM_DESC(temp_max_decic, "Test upper temperature bound, 150..420 deciC");
 
+static int pd9v_max_ma = DBY_CHG_PD9V_DEFAULT_MA;
+static DEFINE_MUTEX(chg_devices_lock);
+static LIST_HEAD(chg_devices);
+
 struct dby_chg_icl {
 	unsigned int reg, writes, errors;
 	unsigned int allow_reg, allow_writes;
@@ -60,6 +65,8 @@ struct dby_chg_snapshot {
 	struct dby_chg_control control;
 	struct dby_chg_pause pause;
 	struct dby_chg_icl icl;
+	struct dby_chg_thermal thermal;
+	int chg_temp_mc, chg_temp_error, pd9v_max_ma;
 	u64 sampled_ms;
 	unsigned int reason, attempts, pets, write_errors;
 	int write_error;
@@ -68,7 +75,8 @@ struct dby_chg_snapshot {
 struct dby_chg {
 	struct device *dev;
 	struct regmap *map;
-	struct iio_channel *therm;
+	struct iio_channel *therm, *chg_temp;
+	struct list_head parameter_node;
 	struct power_supply *psy;
 	struct delayed_work work;
 	struct mutex operation_lock;
@@ -82,6 +90,42 @@ struct dby_chg {
 	struct led_trigger *red, *green;
 	unsigned int red_brightness, green_brightness;
 };
+/* Lock order: devices lock -> operation_lock. Evaluation never takes the
+ * devices lock. Stop detaches before cancellation, so parameter writes cannot
+ * queue work after teardown; the devm action also covers probe failures. */
+static int chg_set_pd9v(const char *value, const struct kernel_param *kp)
+{
+	struct dby_chg *chg;
+	int proposed, ret = kstrtoint(value, 0, &proposed);
+
+	if (ret)
+		return ret;
+	if (!dby_chg_pd9v_valid(proposed))
+		return -EINVAL;
+	mutex_lock(&chg_devices_lock);
+	WRITE_ONCE(*(int *)kp->arg, proposed);
+	list_for_each_entry(chg, &chg_devices, parameter_node) {
+		mutex_lock(&chg->operation_lock);
+		if (!chg->stopping)
+			mod_delayed_work(system_freezable_wq, &chg->work, 0);
+		mutex_unlock(&chg->operation_lock);
+	}
+	mutex_unlock(&chg_devices_lock);
+	return 0;
+}
+static const struct kernel_param_ops chg_pd9v_ops = {
+	.set = chg_set_pd9v, .get = param_get_int,
+};
+module_param_cb(pd9v_max_ma, &chg_pd9v_ops, &pd9v_max_ma, 0644);
+MODULE_PARM_DESC(pd9v_max_ma, "Fixed PD 9V current ceiling: 1500,2000,2250,2500,2750,3000 mA; default 1500");
+static void chg_parameter_detach(void *data)
+{
+	struct dby_chg *chg = data;
+
+	mutex_lock(&chg_devices_lock);
+	list_del_init(&chg->parameter_node);
+	mutex_unlock(&chg_devices_lock);
+}
 static const unsigned int sample_regs[CHG_NREG] = {
 	0x1006, 0x1007, 0x1070, 0x1206, 0x1306, 0x1042
 };
@@ -136,6 +180,23 @@ static void chg_sample(struct dby_chg *chg, struct dby_chg_sample *s)
 	s->temp_error = iio_read_channel_processed(chg->therm, &s->therm_uv);
 	if (!s->temp_error)
 		s->temp_error = dby_batt_therm_decic(s->therm_uv, DBY_CHG_REF_UV, &s->temp_decic);
+}
+/* Update before enable policy; apply the resulting ICL in this evaluation. */
+static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s)
+{
+	int old = s->thermal.cap_ma;
+	int direction;
+
+	s->pd9v_max_ma = READ_ONCE(pd9v_max_ma);
+	s->chg_temp_mc = 0;
+	s->chg_temp_error = iio_read_channel_processed(chg->chg_temp, &s->chg_temp_mc);
+	direction = dby_chg_thermal_update(&s->thermal, s->pd9v_max_ma,
+		dby_chg_online(&s->sample), s->sample.temp_error, s->sample.temp_decic,
+		s->chg_temp_error, s->chg_temp_mc, chg_now(chg));
+	if (direction < 0)
+		dev_info(chg->dev, "PD thermal drop: thermal_cap_ma=%d previous_ma=%d pd9v_max_ma=%d temp_decic=%d chg_temp_mc=%d batt_temp_error=%d chg_temp_error=%d drops=%u\n",
+			 s->thermal.cap_ma, old, s->pd9v_max_ma, s->sample.temp_decic,
+			 s->chg_temp_mc, s->sample.temp_error, s->chg_temp_error, s->thermal.drops);
 }
 static struct dby_chg_snapshot chg_snapshot(struct dby_chg *chg)
 {
@@ -251,8 +312,16 @@ static int chg_icl_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	int ret;
 
 	BUILD_BUG_ON(DBY_CHG_ICL_REG != 0x1370 || DBY_CHG_ICL_MIN != 0x0a ||
-		     DBY_CHG_ICL_MAX != 0x28 || DBY_CHG_ICL_DEFAULT != 0x1e);
+		     DBY_CHG_ICL_MAX != 0x3c || DBY_CHG_ICL_5V_MAX != 0x28 ||
+		     DBY_CHG_ICL_DEFAULT != 0x1e || DBY_CHG_PD9V_MAX_MA != 3000);
 	if (target < DBY_CHG_ICL_MIN || target > DBY_CHG_ICL_MAX)
+		return -EINVAL;
+	/* Extended codes require a live fixed-PD contract and both ceilings. */
+	if (target > DBY_CHG_ICL_5V_MAX &&
+	    (dby_chg_online(&s->sample) != 1 || icl->source_online != 1 ||
+	     icl->source != CHG_SRC_PD || icl->voltage_uv < 8500000 ||
+	     (int)target * 50 > s->pd9v_max_ma || (int)target * 50 > s->thermal.cap_ma ||
+	     (int)target * DBY_CHG_ICL_STEP_UA > icl->current_ua))
 		return -EINVAL;
 	ret = chg_identity(chg);
 	if (!ret && dev_get_regmap(chg->dev->parent, NULL) != chg->map)
@@ -438,7 +507,8 @@ static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
 	if (icl->stopped)
 		return;
 	target = dby_chg_icl_target(online, icl->last_online,
-		icl->source_online, icl->source, icl->voltage_uv, icl->current_ua);
+		icl->source_online, icl->source, icl->voltage_uv, icl->current_ua,
+		s->pd9v_max_ma, s->thermal.cap_ma);
 	allow = dby_chg_allow_target(online, icl->source_online,
 		icl->source, icl->voltage_uv);
 	if (online == 1 && target) {
@@ -534,6 +604,7 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 	}
 	s = old = chg_snapshot(chg);
 	chg_sample(chg, &s.sample);
+	chg_thermal_sample(chg, &s);
 	now = chg_now(chg);
 	mutex_lock(&chg_limits_lock);
 	low = temp_min_decic;
@@ -589,10 +660,11 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		old.icl.ovr_reg != s.icl.ovr_reg || old.icl.opt_reg != s.icl.opt_reg ||
 		old.icl.source != s.icl.source ||
 		old.icl.voltage_uv != s.icl.voltage_uv || old.icl.current_ua != s.icl.current_ua ||
-		old.icl.errors != s.icl.errors;
+		old.icl.errors != s.icl.errors || old.pd9v_max_ma != s.pd9v_max_ma ||
+		old.thermal.cap_ma != s.thermal.cap_ma || old.chg_temp_error != s.chg_temp_error;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
@@ -602,7 +674,9 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 			s.icl.read_error, s.icl.error, s.icl.allow_reg, s.icl.allow_writes,
 			s.icl.allow_read_error, s.icl.allow_error,
 			s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
-			s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error);
+			s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error,
+			s.chg_temp_mc, s.chg_temp_error, s.pd9v_max_ma, s.thermal.cap_ma,
+			s.thermal.drops, s.thermal.rises);
 	if (summary)
 		chg->last_log_ms = s.sampled_ms;
 	/* Suspend stops petting. After a watchdog bite, USB must be replugged
@@ -756,6 +830,9 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 	seq_printf(seq, "ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d\n",
 		s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
 		s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error);
+	seq_printf(seq, "chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u thermal_changed_ms=%llu\n",
+		s.chg_temp_mc, s.chg_temp_error, s.pd9v_max_ma, s.thermal.cap_ma,
+		s.thermal.drops, s.thermal.rises, s.thermal.changed_ms);
 	dby_chg_prune(&s.control, now);
 	seq_printf(seq, "enable_reg=%02x want_enable=%u toggles_last_hour=%u toggle_budget_remaining=%u last_toggle_ms=%llu manage_stopped_reason=%#x owned_off=%u\n",
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
@@ -801,12 +878,22 @@ static int chg_probe(struct platform_device *pdev)
 	chg->therm = devm_iio_channel_get(dev, "batt_therm");
 	if (IS_ERR(chg->therm))
 		return dev_err_probe(dev, PTR_ERR(chg->therm), "no battery ADC channel\n");
+	chg->chg_temp = devm_iio_channel_get(dev, "chg_temp");
+	if (IS_ERR(chg->chg_temp))
+		return dev_err_probe(dev, PTR_ERR(chg->chg_temp), "no charger temperature ADC channel\n");
+	INIT_LIST_HEAD(&chg->parameter_node);
+	ret = devm_add_action_or_reset(dev, chg_parameter_detach, chg);
+	if (ret)
+		return ret;
 	mutex_init(&chg->operation_lock);
 	spin_lock_init(&chg->status_lock);
 	INIT_DELAYED_WORK(&chg->work, chg_work);
 	/* IRQs may fire as soon as requested; no work until probe commits. */
 	chg->stopping = true;
 	chg->latest.icl.last_online = -1;
+	chg->latest.pd9v_max_ma = READ_ONCE(pd9v_max_ma);
+	chg->latest.thermal.cap_ma = chg->latest.pd9v_max_ma;
+	chg->latest.chg_temp_error = -ENODATA;
 	chg->latest.icl.read_error = -ENODATA;
 	chg->latest.icl.allow_read_error = -ENODATA;
 	chg->latest.icl.ovr_read_error = -ENODATA;
@@ -851,10 +938,17 @@ static int chg_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chg);
 	chg->debug_dir = debugfs_create_dir("dby-chg", NULL);
 	debugfs_create_file("status", 0444, chg->debug_dir, chg, &chg_status_fops);
+	mutex_lock(&chg_devices_lock);
 	mutex_lock(&chg->operation_lock);
+	spin_lock(&chg->status_lock);
+	chg->latest.pd9v_max_ma = READ_ONCE(pd9v_max_ma);
+	chg->latest.thermal.cap_ma = chg->latest.pd9v_max_ma;
+	spin_unlock(&chg->status_lock);
+	list_add_tail(&chg->parameter_node, &chg_devices);
 	chg->stopping = false;
 	queue_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(DBY_CHG_FIRST_MS));
 	mutex_unlock(&chg->operation_lock);
+	mutex_unlock(&chg_devices_lock);
 	dev_info(dev, "charging manager active; temperature model provisional; replug USB after watchdog bite\n");
 	return 0;
 }
@@ -863,6 +957,7 @@ static void chg_stop(struct platform_device *pdev)
 	struct dby_chg *chg = platform_get_drvdata(pdev);
 	struct dby_chg_snapshot s;
 
+	chg_parameter_detach(chg);
 	mutex_lock(&chg->operation_lock);
 	WRITE_ONCE(chg->stopping, true);
 	chg_led_set(chg, 0, 0);
