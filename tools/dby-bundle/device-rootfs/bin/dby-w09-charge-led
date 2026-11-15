@@ -20,10 +20,19 @@ def main():
                     pass
             return 0
         power = Path("/sys/class/power_supply")
-        online = (power / "dby-chg/online").read_text().strip()
-        status = (power / "dby-fg/status").read_text().strip()
-        capacity = int((power / "dby-fg/capacity").read_text())
-        maxima = [int((led / "max_brightness").read_text()) for led in leds]
+        try:
+            online = (power / "dby-chg/online").read_text().strip()
+            status = (power / "dby-fg/status").read_text().strip()
+            capacity = int((power / "dby-fg/capacity").read_text())
+        except (OSError, ValueError):
+            # The gauge can register before its first usable sample.
+            return 0
+        if status == "Unknown":
+            return 0
+        try:
+            maxima = [int((led / "max_brightness").read_text()) for led in leds]
+        except FileNotFoundError:
+            return 0
         if not all((led / "brightness").exists() for led in leds):
             return 0
         if online != "1":
@@ -38,8 +47,6 @@ def main():
         for led, maximum, ratio, on in zip(leds, maxima, (70, 120), enabled):
             brightness = max(1, (maximum * ratio + 127) // 255) if on else 0
             (led / "brightness").write_text(f"{brightness}\n")
-    except FileNotFoundError:
-        return 0
     except (OSError, ValueError):
         print("charge-led: cannot update indicator", file=sys.stderr)
         return 1
