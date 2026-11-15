@@ -44,22 +44,6 @@ class DeviceOverlayTests(unittest.TestCase):
             self.assertNotEqual(run().returncode, 0)
             self.assertEqual((gadget / "idProduct").read_text(), "unknown")
 
-    def test_rtc_offset_save_uses_only_temporary_state(self):
-        module = helper("dby-w09-rtc-offset")
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "since_epoch").write_text("1000")
-            saved = Mock()
-            result = module.run("save", rtc=root, offset=root / "offset", now=lambda: module.LOW,
-                                synced=lambda: True, write=saved, emit=lambda message: None)
-            self.assertEqual(result, 0)
-            saved.assert_called_once_with(root / "offset", module.LOW - 1000)
-            saved.reset_mock()
-            result = module.run("save", rtc=root, offset=root / "offset", now=lambda: module.LOW,
-                                synced=lambda: False, write=saved, emit=lambda message: None)
-            self.assertEqual(result, 0)
-            saved.assert_not_called()
-
     def test_watchdog_retries_display_on_without_accessing_devices(self):
         module = helper("dby-w09-display-watchdog")
         answers = [Mock(returncode=0), Mock(returncode=1), Mock(returncode=0)]

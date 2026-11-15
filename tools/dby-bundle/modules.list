@@ -23,7 +23,9 @@ kernel/drivers/pci/pwrctrl/pci-pwrctrl-pwrseq.ko
 kernel/drivers/net/wireless/ath/ath11k/ath11k.ko
 kernel/drivers/net/wireless/ath/ath11k/ath11k_pci.ko
 kernel/drivers/rtc/rtc-pm8xxx.ko
+kernel/drivers/nvmem/nvmem_qcom-spmi-sdam.ko
 kernel/drivers/input/misc/gpio-vibra.ko
+kernel/drivers/input/ff-memless.ko
 kernel/drivers/i2c/busses/i2c-qcom-geni.ko
 kernel/drivers/media/cec/core/cec.ko
 kernel/drivers/power/reset/qcom-pon.ko

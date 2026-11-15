@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Validate shared RTC time before allowing offset writeback
+Wants=chrony.service
+After=chrony.service
+
+[Service]
+Type=exec
+ExecStart=/run/dby-device/bin/dby-w09-rtc-gate
+RuntimeMaxSec=610s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

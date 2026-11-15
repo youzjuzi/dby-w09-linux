@@ -75,7 +75,7 @@ class BuilderTests(unittest.TestCase):
             "filter=1 lock_px=12 confirm=1 multi=1 guard=0"])
         self.assertIn("pci-pwrctrl-pwrseq.ko", (tree / "modules/7.2.10/modules.dep").read_text())
         self.assertTrue((tree / "etc/systemd/system/multi-user.target.wants/dby-w09-usb-gadget.service").is_symlink())
-        self.assertEqual(stat.S_IMODE((tree / "bin/dby-w09-rtc-offset").stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((tree / "bin/dby-w09-rtc-gate").stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE((tree / FIRMWARE).stat().st_mode), 0o644)
         self.assertEqual((tree / "DEVICE-CONTENTS.txt").read_bytes(), B.contents(tree))
         initrd = gzip.decompress((self.output / "p1/UBOOT/initrd.img").read_bytes())
