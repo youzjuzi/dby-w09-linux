@@ -31,7 +31,7 @@ unload-restore exception write remain U.
 `1006=47` occurs both when charging is disabled and after a watchdog bite;
 it cannot distinguish them. `1207` differed between experimental windows,
 but its meaning remains U; this driver neither samples nor gates on it.
-Those earlier device observations do not validate the new input-current control or fixed 9 V PD candidate described below; both remain pending device validation.
+Those earlier observations predate input-current control; its device results (bundle `20261115-11`, one tablet, 2026-11-16, H) are recorded at the end of the ICL section below.
 
 ## Hardware ownership / 硬件归属
 
@@ -233,7 +233,7 @@ done
 
 This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The charger register addresses written are `0x1070/0x1643/0x1042` at the four original call sites, plus bounded `0x1370/0x1344/0x1342/0x1366`, each at one shared call site; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
 
-项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址为 `0x1070/0x1643/0x1042`（原四处调用）及 `0x1370/0x1344/0x1342/0x1366`（各一个受限调用点），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，本轮固定 9 V 候选仍待验证，电脑 USB 口屏亮时可能净放电。
+项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址为 `0x1070/0x1643/0x1042`（原四处调用）及 `0x1370/0x1344/0x1342/0x1366`（各一个受限调用点），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证；固定 9 V/1.5 A 与输入限流已在一台设备实机通过（2026-11-16，H），电脑 USB 口屏亮时可能净放电。
 
 ## Kernel charge indicator / 内核充电指示灯
 
@@ -332,9 +332,14 @@ high-current option, consistent with the stock smb5 ICL override flow. The
 old non-PD 5 V result happened to follow `1370` in automatic mode and did not
 prove 9 V limiting.
 
-**The ICL override fix remains an offline candidate.** Actual 9 V input
-limiting to status `1E`, continued charging, unplug/PC/OTG behavior and errors
-need device validation. No `1340/1341`, `1362`, fast-charge current (`1061`),
+**Device result (bundle `20261115-11`, one tablet, 2026-11-16, H).** Lenovo PD
+charger: fixed 9 V/1.5 A contract, `1342=01`, `1366=01`, `1370=1E`, `1344=02`,
+ICL status `1106..1109=1E`, charging, no hard reset. 3 A Rp charger: `src=C`,
+`1370=28`, ICL status `28`, charging. Unplug restores `1344/1342/1366/1370 =
+00/00/02/1E`. PC USB port (default Rp, SDP): no override, hardware picks 500 mA
+(`1106=0A`); net discharge with the screen on, as before. OTG receiver: offline,
+LEDs off, no writes. `write_errors=0` throughout. Earlier (bundle `-10`, before
+the override) a 15-minute 9 V run went 81→88% at 26.9–29.3 °C. No `1340/1341`, `1362`, fast-charge current (`1061`),
 watchdog configuration or other allowance values are written. 9 V/2 A remains
 a possible later experiment, not implemented; no Huawei 22.5 W protocol is
 implemented.
