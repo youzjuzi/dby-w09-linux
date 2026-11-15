@@ -21,7 +21,7 @@ This is a development-source workflow, not an out-of-box installer for arbitrary
 
 Historical identifiers in touch-plan fields have no external meaning; readers do not need to find corresponding internal material. Field-value changes are deferred to a separate post-release task, conditional on byte-identical generated plans and nt36523-thp.ko.
 
-## Current baseline: 2026-11-02
+## Current baseline: 2026-11-02 (updated 2026-11-15)
 
 Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = user observation; **O** = offline validation; **U** = unverified or not implemented. The table concerns the rebuilt baseline, not the earlier development system. Details and historical results are in [status](docs/status.md).
 
@@ -40,6 +40,10 @@ Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = use
 | Touch / stylus | Single touch, edges/four corners and multi-touch pinch work in the short recorded test with `guard=0`; stylus not implemented | H + R, 2026-11-02; three-finger gestures and long-term touch stability U |
 | Audio / speakers | Automatic startup via `dby-w09-audio.service`; on one tablet, four consecutive cold boots of `20261102-17` gave three successes and one failure. The startup wait was affected by a wall-clock step (H, cause identified). Package `20261102-18` reads both waits from the monotonic uptime clock (O) and then passed six consecutive cold boots (H + R, 2026-11-08); six boots is too few to call startup reliable (R/U). Four-channel capture and four desktop speakers were validated earlier; no speaker protection algorithm.See [audio notes](docs/audio-capture.md). | Prior capture H + R, 2026-11-06; speakers H + R, 2026-11-07; autostart: `20261102-17` 3 of 4 boots, `20261102-18` 6 of 6 boots (H + R), long-term reliability R/U; safe-mode skip, mapping and long-term speaker use U |
 | Power key / cover switch | Tap blanks the screen and the key wakes it; hold opens GNOME's shutdown dialog; closing the magnetic cover blanks the screen and opening wakes it (suspend is never requested; attaching the pen does not blank). One tablet, bundles `20261102-20`–`-24`: 50/50 off/on cycles, 11 cover cycles, no failures; screen-off draw about 0.84–0.91 W with Wi-Fi connected. Suspend, touch wake, login-screen behavior and long-term stability untested | H + R, 2026-11-08 |
+| Charging | `dby-chg` keeps charging under the inherited PMIC watchdog; sustained charging and the desktop indicator observed (2026-11-05). Since 2026-11-15 plug/unplug, charger-state and watchdog-bark events come from PM8150B hardware interrupts: the LED and the power-connected sound follow plugging immediately, the tray icon within about 2 s | H + R, 2026-11-05 and 2026-11-15 (bundle `20261115-7`); natural FULL/recharge, suspend, multi-temperature and long-term behavior U |
+| Charge indicator | Red/green LED next to the front camera (PM8150L LPG) driven by kernel triggers: yellow while charging, off when unplugged; red below 10%, green at Full or ≥90% | H + R, 2026-11-15; red and green phases not yet observed |
+| Power profiles | GNOME power-saver / balanced / performance via `tuned-ppd` and three board profiles (CPU big/prime and GPU frequency bounds); selection survives reboot | H + R, 2026-11-15, bundle `20261115-3`; cards installed earlier need `sudo apt install tuned-ppd` |
+| Vibration motor | `gpio-vibrator` on TLMM GPIO72, FF_RUMBLE evdev (idea from CoWave-Fall's linux-on-arm-matepad11; reimplemented, no code copied) | H + R, 2026-11-15, three 300 ms pulses |
 | Device-package update / rollback | Same-version no-op, downgrade, upgrade and backup rollback; keeps p2 and seed | H + R, 2026-11-02; one SD / one tablet, bundles `20261102-2` / `20261102-3`, kernel `7.2.10` |
 | Seed / safe-mode editor | Validated editing, private backup and restore; p1 only | H: wizard/timezone; H + R: safe-mode, derived-PSK write/read-back and restore; other settings O/U |
 | Reinstall system | Reformat existing p2 only; preserve p1/seed; no data backup | H + R, full system, 2026-11-02/03 |
@@ -105,7 +109,7 @@ Power-key tap/hold and cover (lid) screen blanking were validated on one tablet 
 ## Current operating limits
 
 - The speakers have no excursion or thermal protection algorithm. Gain limits are not speaker protection; prolonged loud playback may damage them. Audio autostart passed only six consecutive cold boots on one tablet (owner report R, 2026-11-08; maintainer-reviewed evidence in status); long-term reliability is unknown.
-- `dby-chg` writes PMIC charger registers `0x1070`, `0x1643` and `0x1042`, affecting charging behavior. Natural FULL/recharge, suspend, multi-temperature calibration and long-term behavior remain U. There is no fast charging; a PC USB port can leave the battery discharging with the screen on.
+- `dby-chg` writes PMIC charger registers `0x1070`, `0x1643` and `0x1042`, affecting charging behavior. Requesting its three interrupts makes the upstream SPMI interrupt controller write the interrupt configuration registers of PM8150B blocks `0x10`, `0x13` and `0x16`; the charge indicator uses the upstream PM8150L LPG driver. Natural FULL/recharge, suspend, multi-temperature calibration and long-term behavior remain U. There is no fast charging; a PC USB port can leave the battery discharging with the screen on.
 - s2idle is unverified. When the power-key daemon stops and restores GNOME settings, the usual lid action is `suspend`; the exact restored value is the user's saved setting. See the power-key notes before stopping it.
 - Bluetooth evidence covers the controller and one mouse only. A2DP and reconnection remain U; provide your own private `local-bd-address` during DTB generation.
 - Venus requires manual `modprobe venus_core`. H.264 end-of-stream/seek can crash the firmware, with about 3 s recovery and lost tail frames; browsers cannot use this path. Firmware is an owner private input, not distributed. See the status page for the existing provenance limits.
@@ -113,10 +117,3 @@ Power-key tap/hold and cover (lid) screen blanking were validated on one tablet 
 This is an independent project with no affiliation to Huawei, HarmonyOS, MatePad, Qualcomm or Ubuntu; names remain their owners' trademarks. The detailed dates and evidence boundaries in the status page apply to each feature.
 
 Speaker builds require owner-supplied private configuration tables; see [preparation and build instructions](drivers/dby-tfa9874/README.md). The source tree contains no original amplifier sequences; generated headers and modules containing the data are not for redistribution.
-
-### GPIO vibrator candidate (O)
-
-The device pack includes upstream `gpio-vibra.ko` and its dependency closure.
-The matching board DT describes TLMM GPIO72; OF modalias loading exposes a
-`gpio-vibrator` evdev device with FF_RUMBLE. Motor operation awaits device
-validation (U). Idea from CoWave-Fall's linux-on-arm-matepad11; reimplemented, no code copied.
