@@ -240,6 +240,6 @@ Missing/Unknown FG data leaves the LEDs unchanged. Red/green levels 140/240
 retain the stock 70/255 and 120/255 ratios for LPG max_brightness=511.
 Unchanged levels are not sent again; late LED registration inherits the trigger
 brightness. Remove and shutdown turn both triggers off; remove also unregisters
-them. The earlier userspace LED behavior was observed on one tablet; hardware
-IRQs, thirty-second policy sampling and kernel LED control are offline-only (O)
-until this revision is tested on the device.
+them. On one tablet (2026-11-15, bundle `20261115-7`, H + R) the three IRQs, the
+immediate LED response, the 2-second settle resample and 30-second petting were
+confirmed; shutdown turn-off of the kernel-trigger LEDs has not been observed yet.

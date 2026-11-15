@@ -157,7 +157,7 @@ The charging indicator is driven by `dby-chg-red` / `dby-chg-green` kernel
 LED triggers bound to the upstream PM8150L LPG LEDs. The userspace helper,
 udev rule, timer and shutdown services have been removed. Unknown fuel-gauge
 data preserves the previous light state; remove/shutdown extinguish both LEDs.
-The IRQ/kernel-trigger revision is offline-only (O), pending device validation.
+The IRQ/kernel-trigger revision passed plug/unplug checks on one tablet (H + R, 2026-11-15).
 See [charger policy and hardware ownership](../../drivers/dby-chg/README.md).
 
 The initramfs retains the read-only p1/device image and module binding contract.
