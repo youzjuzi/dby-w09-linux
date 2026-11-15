@@ -43,9 +43,17 @@ It is not measured remaining energy. Capacity and maximum voltage come from
 the owner stock battery profiles. Temperature is not exposed. Health/cycle
 counts requiring IMA SRAM writes are outside this read-only implementation.
 
+Device result (one tablet, 2026-11-15, H): the IRQ registered and only bit 3 of
+`0x4015` was set; the four design properties appeared in sysfs. During 12 min of
+discharge (91% → 87%) the IRQ fired 9 times, about every 60–130 s, i.e. about
+2–3 times per displayed percent, but **never at the moment `capacity` changed**
+(12–40 s apart). It therefore does not track the displayed SOC; displayed changes
+still reach userspace through the charger's 30 s notification. Kept for now as a
+harmless extra notification; what quantity it follows is unknown (U).
+
 `msoc-delta` 只通知标准 power_supply 消费者，不在处理函数读写寄存器；每变化
 多少电量触发一次取决于继承的 FG SRAM 阈值（未知），本驱动不修改。
 设计容量 7150 mAh、最高设计电压 4.4 V 来自原厂配置；设计能量 27.6705 Wh
 按未证实的标称电压 3.87 V 估算，不是测量值。`simple-battery` 参数由核心自动
 公开，不新增驱动属性；不显示温度，不做需要 IMA SRAM 写入的健康度/循环次数。
-本次中断、sysfs 属性及桌面显示待实机验收，当前仅有离线证据（O）。
+实机(一台平板,2026-11-15,H):中断注册成功,`0x4015` 只多 bit3;四个设计参数出现在 sysfs。放电 12 分钟(91%→87%)中断 9 次、约 60–130 s 一次,即每个显示百分点 2–3 次,但**没有一次与 `capacity` 变化同时**(相差 12–40 s),说明它跟随的不是显示电量;显示变化仍靠充电驱动 30 s 一次的通知送达。暂时保留(只是多一次无害通知),它跟随的是哪个量未知(U)。
