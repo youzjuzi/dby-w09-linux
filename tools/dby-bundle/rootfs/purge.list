@@ -56,3 +56,6 @@ firefox
 
 # ubuntu-report
 ubuntu-report
+
+# power-profiles (install stage uses --no-remove; tuned-ppd replaces this)
+power-profiles-daemon

@@ -137,7 +137,17 @@ validate three-finger gestures, long-term stability or the guard feature.
 The device image contains the selected modules, depmod metadata, locked private
 payloads, public runtime overlay and `DEVICE-CONTENTS.txt`. New source copies in
 `device-rootfs/` retain USB NCM/network setup, RTC offset services, display watchdog
-and managed touch options. Service enablement uses relative wants links. The USB
+and managed touch options. It also includes three board-specific tuned profiles
+(CPU `schedutil` plus CPU/GPU frequency bounds), the tuned-ppd mapping and systemd
+drop-ins exposing `/run/tuned` configuration at `/etc/tuned` inside each service.
+Only configuration is bound: the active/base profile state stays writable on p2.
+A board-only recommendation selects balanced on first use, avoiding the bundled
+generic profiles; tuned-ppd then restores the last user selection. Battery-based
+switching is disabled. TuneD 2.25.1 ships with `dynamic_tuning=0`, so no replacement
+`tuned-main.conf` is needed. Existing full cards need the owner to install
+`tuned-ppd` after the p1 update and boot; new full rootfs builds include it.
+This integration is O only; GNOME switching and reboot persistence await device
+verification. Service enablement uses relative wants links. The USB
 gadget uses kernel-generated addresses and no serial string; its network matches
 `usb0` by name. No fixed device identity is embedded in public sources.
 

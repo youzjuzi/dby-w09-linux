@@ -103,7 +103,7 @@ provenance goes into source input digests. Existing other-kind archives are kept
 ## Recipe contents and origins
 
 `purge.list` preserves all 39 names from the old installer source lock and adds
-`firmware-sof-signed`, for 40 names in total:
+`firmware-sof-signed` and `power-profiles-daemon`, for 41 names in total:
 
 | Group | Count | Reason |
 |---|---:|---|
@@ -114,10 +114,15 @@ provenance goes into source input digests. Existing other-kind archives are kept
 | kernel | 13 | Kernel and modules are supplied by p1 |
 | snap | 2 | Remove the snap service/browser shell from the minimal layer |
 | ubuntu-report | 1 | Preserve the existing telemetry cut |
+| power-profiles | 1 | Remove the placeholder daemon before installing tuned-ppd with `--no-remove` |
 
 Only installed names are passed to purge. Full additions are openssh-server,
-python3, iw and wireless-regdb: SSH, seed execution, regulatory requests and the
-public regulatory database. Test additions also include network-manager,
+python3, iw, wireless-regdb and tuned-ppd: SSH, seed execution, regulatory requests,
+the public regulatory database and GNOME power profiles backed by TuneD.
+`tuned-ppd` depends on `tuned`, conflicts with and provides `power-profiles-daemon`.
+The full recipe explicitly purges the old daemon first because its install stage
+uses `--no-remove`. The test recipe is unchanged and does not install tuned-ppd. Its networking
+additions include network-manager,
 wpasupplicant, rfkill, systemd-resolved, systemd-timesyncd, iproute2 and curl, with no
 desktop. wpasupplicant is NetworkManager's Wi-Fi runtime dependency but is only
 a package recommendation, so `--no-install-recommends` requires listing it

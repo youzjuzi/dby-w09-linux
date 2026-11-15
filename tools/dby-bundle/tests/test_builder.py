@@ -81,6 +81,17 @@ class BuilderTests(unittest.TestCase):
         initrd = gzip.decompress((self.output / "p1/UBOOT/initrd.img").read_bytes())
         self.assertTrue(initrd.startswith(b"070701"))
         self.assertIn(b"SAFE MODE: runtime module policy installed", initrd)
+        for name in (
+            "tuned/profiles/dby-w09-balanced/tuned.conf",
+            "tuned/profiles/dby-w09-powersave/tuned.conf",
+            "tuned/profiles/dby-w09-performance/tuned.conf",
+            "tuned/ppd.conf", "tuned/recommend.conf",
+            "systemd/system/tuned.service.d/50-dby-w09.conf",
+            "systemd/system/tuned-ppd.service.d/50-dby-w09.conf",
+        ):
+            self.assertEqual((tree / "etc" / name).read_bytes(),
+                             (TOOL / "device-rootfs/etc" / name).read_bytes())
+            self.assertIn(name.encode(), initrd)
         self.assertIn(first["files"]["p1/UBOOT/dby-device.img"]["sha256"].encode(), initrd)
         self.assertEqual(gzip.decompress((self.output / "p1/UBOOT/Image").read_bytes()),
                          (self.root / "kernel/arch/arm64/boot/Image").read_bytes())

@@ -36,10 +36,12 @@ class RootfsTests(unittest.TestCase):
 
     def test_lists_preserve_cut_packages_and_reject_bad_tokens(self):
         purge = package_list(RECIPE / "purge.list")
-        self.assertEqual(len(purge), 40)
+        self.assertEqual(len(purge), 41)
         self.assertIn("flash-kernel", purge)
         self.assertIn("linux-firmware", purge)
         self.assertIn("firmware-sof-signed", purge)
+        self.assertIn("power-profiles-daemon", purge)
+        self.assertIn("tuned-ppd", package_list(RECIPE / "add.list"))
         self.assertNotIn("alsa-topology-conf", purge)
         self.assertIn("openssh-server", package_list(RECIPE / "add.list"))
         path = self.root / "list"
@@ -141,7 +143,7 @@ class RootfsTests(unittest.TestCase):
         full_units = next(row for row in full["stages"] if row["stage"] == "system-units")
         self.assertIn("chrony", full_units["enable"])
         self.assertNotIn("systemd-timesyncd", full_units["enable"])
-        self.assertEqual(full["add"], ["openssh-server", "python3", "iw", "wireless-regdb"])
+        self.assertEqual(full["add"], ["openssh-server", "python3", "iw", "wireless-regdb", "tuned-ppd"])
 
     def test_source_hash_gate_and_missing_input_plan(self):
         missing = make_plan("full", None, self.root / "missing-out")
