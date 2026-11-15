@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Restore system time from the SD-card RTC offset
+DefaultDependencies=no
+Wants=time-set.target
+After=local-fs.target systemd-udevd.service
+Before=time-set.target chrony.service shutdown.target
+Conflicts=shutdown.target
+RequiresMountsFor=/var/lib/dby-w09 /usr/local/sbin
+
+[Service]
+Type=oneshot
+ExecStart=/run/dby-device/bin/dby-w09-rtc-offset boot
+ExecStop=/run/dby-device/bin/dby-w09-rtc-offset save
+RemainAfterExit=yes
+TimeoutStartSec=35s
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -118,26 +118,3 @@ The device pack includes upstream `gpio-vibra.ko` and its dependency closure.
 The matching board DT describes TLMM GPIO72; OF modalias loading exposes a
 `gpio-vibrator` evdev device with FF_RUMBLE. Motor operation awaits device
 validation (U). Idea from CoWave-Fall's linux-on-arm-matepad11; reimplemented, no code copied.
-
-### Shared RTC offset candidate (O)
-
-The device pack includes `nvmem_qcom-spmi-sdam.ko`. The matching kernel DT
-connects rtc0 to the PM8150 four-byte SDAM offset at block 0xb100, offset 0xbc,
-and starts the provider read-only. Kernel HCTOSYS supplies boot time; the old
-p2 offset helper, boot service and save timer are removed. Any old p2 offset
-file is left untouched.
-
-`dby-w09-rtc-gate.service` waits up to ten minutes for the read-only adjtimex
-synchronization check, without delaying the multi-user target. Only a difference
-of at most 600 seconds between rtc0 and synchronized system time allows the
-matched provider's `force_ro` to become 0. Timeout, untrusted time or failed
-validation leaves writeback disabled. The gate does not write NVMEM or the RTC
-counter. Chrony must have `rtcsync` enabled; Linux then persists corrections via
-the RTC driver, with changes below 30 seconds deferred to shutdown. The gate
-runs again on every boot. `force_ro` is provider-wide, while the RTC consumer
-writes only its four-byte cell.
-
-Before first boot, set the stock OS to correct automatic network time. Check
-`journalctl -u dby-w09-rtc-gate.service` and the RTC registration log, and verify
-time again in the stock OS. These hardware checks remain pending (U).
-Idea from CoWave-Fall's linux-on-arm-matepad11; reimplemented, no code copied.

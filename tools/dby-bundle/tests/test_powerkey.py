@@ -919,9 +919,9 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), (source / 'etc' / name).read_bytes())
             configs = sorted(p.relative_to(tree / 'etc').as_posix() for p in (tree / 'etc').rglob('*')
                              if p.is_file() or p.is_symlink())
-            # The RTC gate replaces three old units and two enablement links
-            # with one unit and one link; the private runtime config is separate.
-            self.assertEqual(len(configs), 18)
+            # Public overlay has 21 configs including the manual Venus rule;
+            # the bundle adds one private runtime configuration, giving 22.
+            self.assertEqual(len(configs), 21)
             self.assertIn('modprobe.d/11-dby-venus.conf', configs)
             self.assertFalse(any(name.startswith('bin/') for name in configs))
 
