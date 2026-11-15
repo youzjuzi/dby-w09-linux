@@ -43,11 +43,11 @@ The feedback does not separately report full-card verify/read-back, a 120 Hz rea
 
 Earlier one-device evidence, not R4 acceptance: DP3 on 2026-11-15 restored boot text, removed the reported boot PLL-lock error and passed six screen cycles at intervals of at least 3 s (maintainer H + R record); rapid-toggle stripes remain. VR1 vibration passed three 300 ms pulses (H + R). The shared-SDAM RTC hypothesis failed with a 2053 wall clock while its gate stayed read-only; it was reverted. Bundle `20261102-37` uses the original p2 offset services and the maintainer reports normal time (H). / 以上属于旧卡；R4 新卡结果与边界单列于上表。
 
-## Power profiles candidate / 电源三档候选
+## Power profiles / 电源三档
 
 | Feature / 功能 | Implementation and scope / 实现与范围 | Class / 级别 |
 |---|---|---|
-| Three power profiles / 电源三档 | tuned-ppd with three DBY-W09 tuned configurations: power-saver caps big/prime CPU and GPU maxima, balanced restores hardware ranges, performance raises big/prime CPU and GPU minima while retaining schedutil. CPU0–3 keep their full range; GPU uses simple_ondemand. No battery-triggered switching, suspend or refresh-rate changes. Existing full cards need a p1 update and owner installation of tuned-ppd; the full rootfs recipe replaces the old daemon. / tuned-ppd + 三个本机配置：省电限制大核／超大核及 GPU 上限，平衡恢复全范围，性能提高大核／超大核及 GPU 下限；CPU 均保留 schedutil，小核全范围，GPU 使用 simple_ondemand。不按电池自动切档，不改挂起或刷新率。旧 full 卡更新 p1 后由用户安装 tuned-ppd，新 full 配方替换原守护进程。 | O, PP1 (2026-11-15); switching, logs, temperature and reboot persistence pending device checks / 待实机切档、日志、温度与重启保持确认 |
+| Three power profiles / 电源三档 | tuned-ppd with three DBY-W09 tuned configurations: power-saver caps big/prime CPU and GPU maxima, balanced restores hardware ranges, performance raises big/prime CPU and GPU minima while retaining schedutil. CPU0–3 keep their full range; GPU uses simple_ondemand. No battery-triggered switching, suspend or refresh-rate changes. Existing full cards need a p1 update and owner installation of tuned-ppd; the full rootfs recipe replaces the old daemon. / tuned-ppd + 三个本机配置：省电限制大核／超大核及 GPU 上限，平衡恢复全范围，性能提高大核／超大核及 GPU 下限；CPU 均保留 schedutil，小核全范围，GPU 使用 simple_ondemand。不按电池自动切档，不改挂起或刷新率。旧 full 卡更新 p1 后由用户安装 tuned-ppd，新 full 配方替换原守护进程。 | H + R, PP1 (2026-11-15, one tablet, bundle `20261115-3`): all three profiles switched from GNOME and over D-Bus, CPU/GPU limits read back equal to the configuration, no TuneD errors; the selection survives reboot (power-saver and balanced each checked once). Long-term temperature under performance not observed. / 一台平板、包 `20261115-3`:GNOME 与 D-Bus 切三档,CPU/GPU 限频读回与配置一致,TuneD 无报错;重启后保持(省电、平衡各验证一次)。性能档长时间温度未观察。 |
 
 ## Rebuilt baseline / 新工程基线
 

@@ -148,8 +148,8 @@ generic profiles; tuned-ppd then restores the last user selection. Battery-based
 switching is disabled. TuneD 2.25.1 ships with `dynamic_tuning=0`, so no replacement
 `tuned-main.conf` is needed. Existing full cards need the owner to install
 `tuned-ppd` after the p1 update and boot; new full rootfs builds include it.
-This integration is O only; GNOME switching and reboot persistence await device
-verification. Service enablement uses relative wants links. The USB
+tuned starts only after the CPU and GPU frequency interfaces exist (bounded wait).
+GNOME switching and reboot persistence passed on one tablet (H + R, 2026-11-15). Service enablement uses relative wants links. The USB
 gadget uses kernel-generated addresses and no serial string; its network matches
 `usb0` by name. No fixed device identity is embedded in public sources.
 
