@@ -140,6 +140,8 @@ payloads, public runtime overlay and `DEVICE-CONTENTS.txt`. New source copies in
 and managed touch options. It also includes three board-specific tuned profiles
 (CPU `schedutil` plus CPU/GPU frequency bounds), the tuned-ppd mapping and systemd
 drop-ins exposing `/run/tuned` configuration at `/etc/tuned` inside each service.
+TuneD waits up to 20 s for CPU/GPU frequency paths before starting, then proceeds
+even if some remain absent (for example, the GPU in safe mode).
 Only configuration is bound: the active/base profile state stays writable on p2.
 A board-only recommendation selects balanced on first use, avoiding the bundled
 generic profiles; tuned-ppd then restores the last user selection. Battery-based
