@@ -96,6 +96,37 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_TERM_UA 200000
 #define DBY_CHG_REF_UV 1875000
 
+#define DBY_CHG_ICL_REG 0x1370u
+#define DBY_CHG_ICL_DEFAULT 0x1Eu
+#define DBY_CHG_ICL_MIN 0x0Au
+#define DBY_CHG_ICL_MAX 0x28u
+#define DBY_CHG_ICL_MAX_UA 2000000
+#define DBY_CHG_ICL_9V_MAX_UA 1500000
+#define DBY_CHG_ICL_STEP_UA 50000
+enum dby_chg_source { CHG_SRC_UNKNOWN, CHG_SRC_C, CHG_SRC_PD };
+/* Zero means no target/write; only confirmed unplug transitions restore.
+ * Contract/Rp values are micro-units from the standard supplier interface. */
+static inline unsigned int dby_chg_icl_target(int online, int was_online,
+ int source_online, enum dby_chg_source source, int voltage_uv, int current_ua)
+{
+ unsigned int target;
+ int limit;
+
+ if (online == 0) return was_online == 1 ? DBY_CHG_ICL_DEFAULT : 0;
+ if (online != 1 || source_online <= 0 || voltage_uv <= 0 || current_ua <= 0)
+  return 0;
+ if (source == CHG_SRC_C)
+  return current_ua >= 3000000 ? DBY_CHG_ICL_MAX : DBY_CHG_ICL_DEFAULT;
+ if (source != CHG_SRC_PD) return 0;
+ if (voltage_uv < 8500000 && voltage_uv != 5000000) return 0;
+ limit = voltage_uv >= 8500000 ? DBY_CHG_ICL_9V_MAX_UA : DBY_CHG_ICL_MAX_UA;
+ if (current_ua < limit) limit = current_ua;
+ target = limit / DBY_CHG_ICL_STEP_UA;
+ if (target < DBY_CHG_ICL_MIN) target = DBY_CHG_ICL_MIN;
+ if (target > DBY_CHG_ICL_MAX) target = DBY_CHG_ICL_MAX;
+ return target;
+}
+
 enum dby_chg_reg { CHG_STATE, CHG_FLAGS, CHG_FLOAT, CHG_HW_TEMP, CHG_USB, CHG_ENABLE, CHG_NREG };
 struct dby_chg_sample {
  unsigned int reg[CHG_NREG];

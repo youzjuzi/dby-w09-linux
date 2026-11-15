@@ -31,13 +31,13 @@ unload-restore exception write remain U.
 `1006=47` occurs both when charging is disabled and after a watchdog bite;
 it cannot distinguish them. `1207` differed between experimental windows,
 but its meaning remains U; this driver neither samples nor gates on it.
-No fast charging, PD negotiation or input-current control is claimed.
+Those earlier device observations do not validate the new input-current control or fixed 9 V PD candidate described below; both remain pending device validation.
 
 ## Hardware ownership / 硬件归属
 
 | Block | Owner | Boundary |
 |---|---|---|
-| PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; this revision uses three IRQs |
+| PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; `0x1370` input-current limit follows Type-C/PD through `dby-chg` |
 | `0x11` DCDC/OTG | Upstream `qcom,pm8150b-vbus-reg` | Charger does not access it |
 | `0x15` Type-C, `0x17` PD PHY | Upstream `qcom_pmic_tcpm` | Future charger integration reads standard power_supply/role information |
 | `0x40`–`0x43` FG | `dby-fg` | Read-only fuel gauge; `msoc-delta` IRQ requested only by `dby-fg` |
@@ -48,17 +48,18 @@ OTG observation on one tablet: `usbin-plugin=0`, USB input absent, Type-C
 source/host, VBUS regulator enabled and charge indicator off. Thus the charger
 makes no control write or pet while OTG is confirmed absent at USBIN; the
 charger does not manage the OTG regulator. This IRQ revision still needs device
-validation. PD fast charging (reading tcpm power_supply before input-current
-control), USB3 and wireless supply (independent MT5727 driver) are future work,
-not implemented here.
+validation. Fixed-PDO input-current control is an offline candidate described below. USB3,
+PPS, Huawei SCP/FCP and wireless supply (independent MT5727 driver) remain future
+work and are not implemented here.
 
 The SPMI irqchip owns type/polarity/clear/enable/disable writes at offsets
 `0x11`–`0x16` in the requested interrupt blocks. The charger itself still has
-only the four fixed write sites below, and does not write watchdog configuration.
+the four original fixed write sites plus one bounded ICL write site below; it
+does not write watchdog configuration.
 
 ## Fixed write surface
 
-There are exactly four fixed charger write call sites:
+The four original fixed charger write call sites remain unchanged:
 
 - Probe only: `1070=55` permits one `1070=50` write with readback. Already 50
   is accepted without writing; any other value or read error rejects probe.
@@ -67,8 +68,9 @@ There are exactly four fixed charger write call sites:
 - Enable: `1042=01`, only after a fresh read of exactly 00. Normal enable and
   the bounded remove recovery share this call site.
 
-All constants have compile-time assertions. No watchdog configuration, current
-limit or other charger register is written. Standard ADC5 measurements perform
+The additional `1370` ICL write site is shared by runtime changes and bounded
+restoration, with a hard range check `0x0A..0x28`. Constants have compile-time
+assertions. No watchdog configuration or other charger register is written. Standard ADC5 measurements perform
 the provider's own ADC and EOC operations. Do not run concurrent charger
 experiments or other register writers.
 
@@ -159,7 +161,8 @@ identity/regmap and reads exactly 00 immediately before the write, then verifies
 01. This one exit attempt is explicitly exempt from runtime spacing/budget;
 there is no retry. If the latest evaluation disallowed charging, or management
 has stopped on a fault, it leaves enable unchanged and logs why. Unowned initial
-00 is never restored by remove. Shutdown stops work and extinguishes both LED triggers; it never writes charger registers.
+00 is never restored by remove. Shutdown stops work, extinguishes both LED triggers and restores only ICL
+`1370=1E`; it does not write enable, float or watchdog registers.
 
 The freezable queue does not pet during suspend. Unload, shutdown and faults
 stop pets; the inherited watchdog remains active. After an actual watchdog
@@ -219,16 +222,16 @@ done
 喂狗，读失败停喂，写失败永久停止管理。运行期严格遵守30秒间隔与滑动小时12次
 预算；等待间隔期间实际充电状态可能尚未改变。卸载只在最近评估允许充电且拥有
 停充状态时尝试恢复一次，允许这一次间隔/预算例外，失败不重试；不允许则保持
-禁用并记录日志，shutdown 不写。故障咬合后仍需重新插线。单独使能位实验有
+禁用并记录日志；shutdown 只恢复新增 ICL 的 1370=1E，不写原有充电控制寄存器。故障咬合后仍需重新插线。单独使能位实验有
 实机证据；整合版已在一台设备自动加载并通过桌面标示、停充/恢复与插拔测试（H + R，
 2026-11-05），**但未连续运行数日，长期风险未知**；自然FULL/再充电、挂起、
 多温度点与卸载恢复例外仍未验证。电脑口约 500 mA，屏亮时可能净放电。
 
 ## Source and risk disclosure / 来源与风险披露
 
-This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The three charger register addresses written are `0x1070/0x1643/0x1042`, with four call sites described above; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
+This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The charger register addresses written are `0x1070/0x1643/0x1042` at the four original call sites, plus bounded `0x1370` at one shared call site; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
 
-项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址只有 `0x1070/0x1643/0x1042`（上文四处调用），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，无快充，电脑 USB 口屏亮时可能净放电。
+项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址为 `0x1070/0x1643/0x1042`（原四处调用）及新增 `0x1370`（一个受限调用点），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，本轮固定 9 V 候选仍待验证，电脑 USB 口屏亮时可能净放电。
 
 ## Kernel charge indicator / 内核充电指示灯
 
@@ -243,3 +246,66 @@ brightness. Remove and shutdown turn both triggers off; remove also unregisters
 them. On one tablet (2026-11-15, bundle `20261115-7`, H + R) the three IRQs, the
 immediate LED response, the 2-second settle resample and 30-second petting were
 confirmed; shutdown turn-off of the kernel-trigger LEDs has not been observed yet.
+
+
+## Type-C input current and fixed PD / 输入限流与固定 PD
+
+The board requests the owner stock sink capabilities: 5 V / 2 A and 9 V / 1.5 A,
+with 13.5 W operating sink power. Source PDOs and dual-role policy are unchanged.
+The charger links to the Type-C supply with standard `power-supplies`;
+`.external_power_changed` queues the existing work immediately without setting
+the two-second settle flag. An already pending IRQ settle deadline is preserved.
+There is no new poller or notifier chain. Each existing evaluation reads ONLINE,
+USB_TYPE, VOLTAGE_NOW and CURRENT_MAX with
+`power_supply_get_property_from_supplier()`; no private supplier reference is
+held. With the new DTB, the core defers charger registration until the supplier
+is registered. With an old DTB lacking the link, supplier data is unavailable
+and runtime ICL does not increase.
+
+| Observation | ICL target at `0x1370` (50 mA per step) |
+|---|---|
+| Confirmed online → offline | Restore firmware `0x1E` (1.5 A) |
+| Stable offline / OTG, or USB state unreadable | No runtime write |
+| Online, supplier offline/unreadable or invalid/nonpositive contract values | No change (retain the last byte, normally firmware `0x1E`) |
+| Online Type-C, Rp current >=3 A | `0x28` (2.0 A) |
+| Online Type-C, other Rp | `0x1E` (1.5 A) |
+| Online fixed PD, voltage >=8.5 V | min(contract current, 1.5 A) / 50 mA |
+| Online fixed PD, exactly 5 V contract | min(contract current, 2.0 A) / 50 mA |
+| PPS/AVS, unknown source type, or other PD voltage below 8.5 V | No change; unsupported |
+
+PD targets are rounded down to 50 mA steps and clamped to `0x0A..0x28` as the
+board policy specifies. This preserves the inherited 1.5 A setting on a PC port;
+it is not a general USB current-limit algorithm for other boards. AICL may settle
+below the requested limit. The pure core function is the only normal target
+selector. Identity/regmap are checked again, current ICL is read before each
+write, equal values are skipped, and writes are read back. A pre-write read
+failure does not authorize a write. Write/readback failure increments aggregate
+`write_errors` and separate ICL errors, latches **only ICL management**, and
+allows one attempt to restore `0x1E`. Even failed recovery reads consume that
+one opportunity; later events/unplug/remove/shutdown do not retry it. A failed
+exit restore is itself the single recovery attempt. Existing enable/temperature/
+FULL policy, toggle budget and watchdog pet gates are unchanged. Normal remove
+and shutdown restore `0x1E` through the same checked write site.
+
+Summary/event logs and debugfs include `icl_reg`, `src`, `contract_mv`,
+`contract_ma`, `icl_writes`, ICL error and latch fields. `icl_writes` counts
+attempts; aggregate `write_errors` now also includes ICL write/readback failures.
+`icl_read_error` marks an invalid/stale register byte; `supplier_error` and
+`supplier_online` disambiguate unavailable contract data. A successful recovery
+can leave `icl_error=0` while `icl_stopped=1` and the error counter remain latched.
+
+**9 V is unverified (U)**: it relies on inherited `0x1360=07` allowing that input;
+this implementation never writes `0x1344` voltage override, APSD/BC1.2/HC control,
+`0x1061` fast-charge current, or watchdog configuration. If device testing shows
+9 V charging failure or input collapse, unplug and stop for review; another
+register change requires a separate decision. No Huawei 22.5 W claim is made.
+
+Acknowledgements: the owner stock `smb5-lib.c` flow and a community Type-C PD
+proposal based on the CoWave kernel informed the approach. The community
+proposal has no established licence declaration here; no implementation code
+was copied. This driver uses independently written standard power-supply API
+integration and the bounded board policy above.
+
+本轮仅为离线候选（O）：5 V/2 A、9 V/1.5 A 受电档位来自原厂描述；只增加
+1370 限流写入，9 V 依赖继承的 1360=07，未写 1344。ICL 错误独立锁存并最多
+恢复一次，不改变原有停充与喂狗门禁；实际合同、输入电流、温度和持续充电待上机。

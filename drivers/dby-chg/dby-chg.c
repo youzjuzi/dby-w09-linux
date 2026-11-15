@@ -43,11 +43,19 @@ module_param_cb(temp_max_decic, &chg_limit_ops, &temp_max_decic, 0600);
 MODULE_PARM_DESC(temp_min_decic, "Test lower temperature bound, 120..350 deciC");
 MODULE_PARM_DESC(temp_max_decic, "Test upper temperature bound, 150..420 deciC");
 
+struct dby_chg_icl {
+	unsigned int reg, writes, errors;
+	int read_error, error, supplier_error, source_online, voltage_uv, current_ua;
+	int last_online;
+	enum dby_chg_source source;
+	bool stopped, recovery_attempted;
+};
 struct dby_chg_snapshot {
 	struct dby_chg_sample sample;
 	struct dby_chg_state state;
 	struct dby_chg_control control;
 	struct dby_chg_pause pause;
+	struct dby_chg_icl icl;
 	u64 sampled_ms;
 	unsigned int reason, attempts, pets, write_errors;
 	int write_error;
@@ -63,6 +71,7 @@ struct dby_chg {
 	spinlock_t status_lock;
 	bool stopping;
 	bool settle_pending;
+	u64 settle_at_ms;
 	u64 start_ms, last_attempt_ms, last_log_ms;
 	struct dby_chg_snapshot latest;
 	struct dentry *debug_dir;
@@ -195,6 +204,115 @@ static void chg_led_unregister(void *data)
 	led_trigger_unregister_simple(chg->green);
 	led_trigger_unregister_simple(chg->red);
 }
+static const char *chg_source_name(enum dby_chg_source source)
+{
+	return source == CHG_SRC_C ? "C" : source == CHG_SRC_PD ? "PD" : "unknown";
+}
+static void chg_supplier_sample(struct dby_chg *chg, struct dby_chg_icl *icl)
+{
+	union power_supply_propval online, type, voltage, amperage;
+	int ret;
+
+	icl->source = CHG_SRC_UNKNOWN;
+	icl->source_online = icl->voltage_uv = icl->current_ua = 0;
+	ret = power_supply_get_property_from_supplier(chg->psy, POWER_SUPPLY_PROP_ONLINE, &online);
+	if (!ret)
+		ret = power_supply_get_property_from_supplier(chg->psy, POWER_SUPPLY_PROP_USB_TYPE, &type);
+	if (!ret)
+		ret = power_supply_get_property_from_supplier(chg->psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &voltage);
+	if (!ret)
+		ret = power_supply_get_property_from_supplier(chg->psy, POWER_SUPPLY_PROP_CURRENT_MAX, &amperage);
+	icl->supplier_error = ret;
+	if (ret)
+		return;
+	icl->source_online = online.intval;
+	icl->voltage_uv = voltage.intval;
+	icl->current_ua = amperage.intval;
+	if (type.intval == POWER_SUPPLY_USB_TYPE_C)
+		icl->source = CHG_SRC_C;
+	else if (type.intval == POWER_SUPPLY_USB_TYPE_PD)
+		icl->source = CHG_SRC_PD;
+	/* PPS/AVS and unknown sources are outside the fixed-PDO policy. */
+}
+/* operation_lock held. All normal and recovery ICL writes share this site. */
+static int chg_icl_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
+		       unsigned int target)
+{
+	struct dby_chg_icl *icl = &s->icl;
+	int ret;
+
+	BUILD_BUG_ON(DBY_CHG_ICL_REG != 0x1370 || DBY_CHG_ICL_MIN != 0x0a ||
+		     DBY_CHG_ICL_MAX != 0x28 || DBY_CHG_ICL_DEFAULT != 0x1e);
+	if (target < DBY_CHG_ICL_MIN || target > DBY_CHG_ICL_MAX)
+		return -EINVAL;
+	ret = chg_identity(chg);
+	if (!ret && dev_get_regmap(chg->dev->parent, NULL) != chg->map)
+		ret = -ENODEV;
+	if (!ret)
+		ret = regmap_read(chg->map, DBY_CHG_ICL_REG, &icl->reg);
+	icl->read_error = ret;
+	if (ret || icl->reg == target)
+		return ret;
+	icl->writes++;
+	ret = regmap_write(chg->map, DBY_CHG_ICL_REG, target);
+	if (!ret) {
+		ret = regmap_read(chg->map, DBY_CHG_ICL_REG, &icl->reg);
+		icl->read_error = ret;
+		if (!ret && icl->reg != target)
+			ret = -EIO;
+	} else {
+		/* The cached byte cannot describe an ambiguous write result. */
+		icl->read_error = ret;
+	}
+	if (ret) {
+		s->write_errors++;
+		icl->errors++;
+		icl->stopped = true;
+	}
+	return ret;
+}
+static void chg_icl_restore(struct dby_chg *chg, struct dby_chg_snapshot *s)
+{
+	/* A terminal ICL fault gets exactly one recovery attempt, including
+	 * read/identity failure; later unplug/remove/shutdown cannot retry it. */
+	if (s->icl.stopped) {
+		if (s->icl.recovery_attempted)
+			return;
+		s->icl.recovery_attempted = true;
+	}
+	s->icl.error = chg_icl_set(chg, s, DBY_CHG_ICL_DEFAULT);
+	if (s->icl.stopped)
+		s->icl.recovery_attempted = true;
+}
+static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
+{
+	struct dby_chg_icl *icl = &s->icl;
+	int online = dby_chg_online(&s->sample);
+	unsigned int target;
+
+	chg_supplier_sample(chg, icl);
+	icl->read_error = s->sample.identity_error ?: regmap_read(chg->map, DBY_CHG_ICL_REG, &icl->reg);
+	target = dby_chg_icl_target(online, icl->last_online,
+		icl->source_online, icl->source, icl->voltage_uv, icl->current_ua);
+	if (icl->stopped || !target) {
+		if (online >= 0)
+			icl->last_online = online;
+		return;
+	}
+	/* Keep an unhandled unplug transition across transient read failures. */
+	if (icl->read_error)
+		return;
+	icl->error = chg_icl_set(chg, s, target);
+	if (!icl->error || icl->stopped)
+		icl->last_online = online;
+	if (icl->stopped) {
+		int fault = icl->error;
+
+		chg_icl_restore(chg, s);
+		dev_warn(chg->dev, "ICL management stopped: error=%d recovery_error=%d; charger control unchanged\n",
+			 fault, icl->error);
+	}
+}
 /* Keep the fixed write operands visible as separate audited call sites. */
 static noinline int chg_enable_off(struct dby_chg *chg)
 {
@@ -296,6 +414,8 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 			s.feeding = true;
 		}
 	}
+	/* Independent ICL errors must not change enable policy or pet gates. */
+	chg_icl_update(chg, &s);
 	s.sampled_ms = chg_now(chg);
 	s.evaluated = true;
 	dby_chg_pause_update(&s.pause, dby_chg_online(&s.sample), s.feeding, s.sampled_ms);
@@ -304,26 +424,41 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 	event = dby_chg_event(old.evaluated, dby_chg_online(&old.sample),
 		 dby_chg_online(&s.sample), old.feeding, s.feeding,
 		 old.state.full, s.state.full, old.reason, s.reason) ||
-		old.sample.reg[CHG_ENABLE] != s.sample.reg[CHG_ENABLE];
+		old.sample.reg[CHG_ENABLE] != s.sample.reg[CHG_ENABLE] ||
+		old.icl.reg != s.icl.reg || old.icl.source != s.icl.source ||
+		old.icl.voltage_uv != s.icl.voltage_uv || old.icl.current_ua != s.icl.current_ua ||
+		old.icl.errors != s.icl.errors;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
-			s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.stopped);
+			s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.stopped,
+			s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
+			s.icl.current_ua / 1000, s.icl.writes, s.icl.stopped,
+			s.icl.read_error, s.icl.error);
 	if (summary)
 		chg->last_log_ms = s.sampled_ms;
 	/* Suspend stops petting. After a watchdog bite, USB must be replugged
 	 * (device observation 2026-11-05); petting alone cannot restart charging. */
 	if (from_work && !chg->stopping) {
-		unsigned int delay = chg->settle_pending ? DBY_CHG_SETTLE_MS : DBY_CHG_INTERVAL_MS;
+		unsigned int delay = DBY_CHG_INTERVAL_MS;
+		u64 scheduled_at = chg_now(chg);
 
+		if (chg->settle_pending)
+			chg->settle_at_ms = scheduled_at + DBY_CHG_SETTLE_MS;
 		chg->settle_pending = false;
+		if (chg->settle_at_ms > scheduled_at)
+			delay = chg->settle_at_ms - scheduled_at;
+		else
+			chg->settle_at_ms = 0;
 		/* This sample covers IRQs received before taking operation_lock.
 		 * Replace any queued immediate run with the single settle sample.
 		 * Later IRQs set the flag again and restart the sequence. Bark
-		 * neither consumes the flag nor changes the work deadline. */
+		 * neither consumes the flag nor changes the work deadline.
+		 * Supplier events do not create a settle sample, but an existing
+		 * IRQ-set deadline must survive their intervening evaluation. */
 		mod_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(delay));
 	}
 	mutex_unlock(&chg->operation_lock);
@@ -334,6 +469,15 @@ static void chg_work(struct work_struct *work)
 	struct dby_chg *chg = container_of(to_delayed_work(work), struct dby_chg, work);
 
 	chg_evaluate(chg, true);
+}
+static void chg_external_power_changed(struct power_supply *psy)
+{
+	struct dby_chg *chg = power_supply_get_drvdata(psy);
+
+	mutex_lock(&chg->operation_lock);
+	if (!chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->work, 0);
+	mutex_unlock(&chg->operation_lock);
 }
 static irqreturn_t chg_changed_irq(int irq, void *data)
 {
@@ -421,6 +565,7 @@ static const struct power_supply_desc chg_desc = {
 	.name = "dby-chg", .type = POWER_SUPPLY_TYPE_USB,
 	.properties = chg_properties, .num_properties = ARRAY_SIZE(chg_properties),
 	.get_property = chg_get,
+	.external_power_changed = chg_external_power_changed,
 };
 static int chg_status_show(struct seq_file *seq, void *unused)
 {
@@ -436,6 +581,11 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 	seq_printf(seq, "reason_mask=%#x feeding=%u full=%u qualifying_samples=%u attempts=%u pets=%u write_errors=%u last_write_error=%d\n",
 		s.reason, s.feeding && !READ_ONCE(chg->stopping), s.state.full, s.state.qualifying,
 		s.attempts, s.pets, s.write_errors, s.write_error);
+	seq_printf(seq, "icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_write_errors=%u icl_stopped=%u icl_recovery_attempted=%u icl_read_error=%d icl_error=%d supplier_online=%d supplier_error=%d\n",
+		s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
+		s.icl.current_ua / 1000, s.icl.writes, s.icl.errors, s.icl.stopped,
+		s.icl.recovery_attempted, s.icl.read_error, s.icl.error,
+		s.icl.source_online, s.icl.supplier_error);
 	dby_chg_prune(&s.control, now);
 	seq_printf(seq, "enable_reg=%02x want_enable=%u toggles_last_hour=%u toggle_budget_remaining=%u last_toggle_ms=%llu manage_stopped_reason=%#x owned_off=%u\n",
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
@@ -486,6 +636,8 @@ static int chg_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&chg->work, chg_work);
 	/* IRQs may fire as soon as requested; no work until probe commits. */
 	chg->stopping = true;
+	chg->latest.icl.last_online = -1;
+	chg->latest.icl.read_error = -ENODATA;
 	chg->start_ms = div_u64(ktime_get_boottime_ns(), NSEC_PER_MSEC);
 	config.drv_data = chg;
 	config.fwnode = dev_fwnode(dev);
@@ -543,11 +695,16 @@ static void chg_stop(struct platform_device *pdev)
 	chg_led_set(chg, 0, 0);
 	mutex_unlock(&chg->operation_lock);
 	cancel_delayed_work_sync(&chg->work);
+	mutex_lock(&chg->operation_lock);
 	s = chg_snapshot(chg);
+	chg_icl_restore(chg, &s);
+	dev_info(chg->dev, "exit ICL restore: icl_reg=%02x icl_writes=%u icl_stopped=%u icl_error=%d write_errors=%u\n",
+		 s.icl.reg, s.icl.writes, s.icl.stopped, s.icl.error, s.write_errors);
 	s.feeding = false;
 	s.reason |= CHG_STOPPING;
 	dby_chg_pause_update(&s.pause, dby_chg_online(&s.sample), false, chg_now(chg));
 	chg_publish(chg, &s);
+	mutex_unlock(&chg->operation_lock);
 	chg_notify(chg);
 }
 static void chg_remove(struct platform_device *pdev)
