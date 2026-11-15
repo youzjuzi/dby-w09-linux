@@ -85,9 +85,8 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_VOLT_REENABLE 4400000
 #define DBY_CHG_FIRST_MS 2000u
 #define DBY_CHG_LOG_MS 600000u
-#define DBY_CHG_INTERVAL_MS 10000u
+#define DBY_CHG_INTERVAL_MS 30000u
 #define DBY_CHG_FULL_MS 180000u
-#define DBY_CHG_FULL_PERIODS 18u
 #define DBY_CHG_TEMP_MIN 120
 #define DBY_CHG_TEMP_MAX 420
 #define DBY_CHG_VOLT_MAX 4430000
@@ -146,9 +145,9 @@ static inline unsigned int dby_chg_conditions(const struct dby_chg_sample *s)
   reason |= CHG_BAD_VOLTAGE;
  return reason;
 }
-/* One observation starts the dwell; 18 subsequent intervals span >=180 s.
+/* One observation starts the dwell; elapsed time must reach >=180 s.
  * Gaps over 2 intervals (e.g. suspend) break continuity, never count as dwell.
- * Duplicate/early evaluations do not advance the counter. */
+ * IRQ observations cannot shorten the dwell. qualifying is diagnostic only. */
 static inline void dby_chg_update(struct dby_chg_state *st,
  const struct dby_chg_sample *s, unsigned long long now)
 {
@@ -175,10 +174,10 @@ static inline void dby_chg_update(struct dby_chg_state *st,
   st->qualifying = 1;
   return;
  }
- if (now - st->previous_ms < DBY_CHG_INTERVAL_MS) return;
+ if (now == st->previous_ms) return;
  st->previous_ms = now;
- st->qualifying++;
- if (st->qualifying > DBY_CHG_FULL_PERIODS && now - st->first_ms >= DBY_CHG_FULL_MS)
+ if (st->qualifying != ~0u) st->qualifying++;
+ if (now - st->first_ms >= DBY_CHG_FULL_MS)
   st->full = 1;
 }
 static inline unsigned int dby_chg_decide(const struct dby_chg_sample *s,

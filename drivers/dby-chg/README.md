@@ -33,13 +33,36 @@ it cannot distinguish them. `1207` differed between experimental windows,
 but its meaning remains U; this driver neither samples nor gates on it.
 No fast charging, PD negotiation or input-current control is claimed.
 
+## Hardware ownership / 硬件归属
+
+| Block | Owner | Boundary |
+|---|---|---|
+| PM8150B `0x10` CHGR, `0x12` BATIF, `0x13` USBIN, `0x16` MISC | `dby-chg` | Only this driver requests their IRQs; this revision uses three IRQs |
+| `0x11` DCDC/OTG | Upstream `qcom,pm8150b-vbus-reg` | Charger does not access it |
+| `0x15` Type-C, `0x17` PD PHY | Upstream `qcom_pmic_tcpm` | Future charger integration reads standard power_supply/role information |
+| `0x40`–`0x43` FG | `dby-fg` | Read-only fuel gauge; no FG IRQ in this revision |
+| PM8150L LPG | Upstream `leds-qcom-lpg` | Charger supplies LED trigger brightness only |
+| MT5727 (I2C) | Future independent driver | Reads battery capacity/temperature through power_supply; no direct charger calls |
+
+OTG observation on one tablet: `usbin-plugin=0`, USB input absent, Type-C
+source/host, VBUS regulator enabled and charge indicator off. Thus the charger
+makes no control write or pet while OTG is confirmed absent at USBIN; the
+charger does not manage the OTG regulator. This IRQ revision still needs device
+validation. PD fast charging (reading tcpm power_supply before input-current
+control), USB3 and wireless supply (independent MT5727 driver) are future work,
+not implemented here.
+
+The SPMI irqchip owns type/polarity/clear/enable/disable writes at offsets
+`0x11`–`0x16` in the requested interrupt blocks. The charger itself still has
+only the four fixed write sites below, and does not write watchdog configuration.
+
 ## Fixed write surface
 
 There are exactly four fixed charger write call sites:
 
 - Probe only: `1070=55` permits one `1070=50` write with readback. Already 50
   is accepted without writing; any other value or read error rejects probe.
-- Healthy USB-present cycles: `1643=01`, at least ten seconds between attempts.
+- Healthy USB-present cycles: `1643=01`, at least thirty seconds between attempts.
 - Disable: `1042=00`, only after a fresh read of exactly 01.
 - Enable: `1042=01`, only after a fresh read of exactly 00. Normal enable and
   the bounded remove recovery share this call site.
@@ -56,7 +79,17 @@ other values reject probe. An observed 01 ends that permission. Later unowned
 
 ## Runtime policy
 
-First work is scheduled about two seconds after probe, then every ten seconds.
+First work is scheduled about two seconds after probe, then every thirty seconds.
+`chg-state-change` and both `usbin-plugin` edges queue an immediate sample.
+The threaded `wdog-bark` handler warns once and runs the same fresh-sample,
+policy and pet path immediately, including the thirty-second minimum pet spacing.
+An early healthy IRQ can retain the feeding status of a recent successful pet,
+including on a brief unplug/replug, without issuing another write. It does not
+bypass read, identity, enable, toggle-error or terminal-fault checks.
+Old DTBs without all three IRQ resources fall back to thirty-second polling;
+IRQ-controller deferral is propagated, and request failures reject probe.
+IRQ threads and work serialize through the same mutex; probe and teardown block
+new evaluation. All resource acquisitions precede the one-shot float write.
 Every sample checks identity/regmap, 1006/1007/1070/1206/1306/1042, FG voltage,
 current/capacity and ADC temperature. Read or identity failures cause no enable
 write and no pet; later good reads may recover. Invalid enable values, lost
@@ -104,9 +137,12 @@ open/short validation or multi-temperature calibration is claimed.
 ## FULL and exit
 
 FULL requires enabled 1042=01, voltage >=4.38 V and 0 <= current <200 mA for
-18 complete intervals and >=180 seconds (normally 19 observations, earliest
-about 182 seconds after probe). Failed gates, read errors or gaps >20 seconds
-break continuity; duplicate/early observations do not advance dwell. FULL
+at least 180 seconds from the first qualifying observation (normally seven
+observations at thirty-second intervals, about 182 seconds after probe).
+Only elapsed boottime determines FULL; IRQ/sample counts never shorten it.
+Failed gates, read errors, backwards time or gaps >60 seconds (two periodic
+intervals) break continuity. Duplicate timestamps add no time; early valid IRQ
+observations refresh continuity but cannot move its start time. FULL
 requests 1042=00 while healthy petting continues. Voltage <4.25 V or an observed
 unplug/replug clears the software latch; allowed policy can then request 01.
 Natural FULL and automatic recharge still need device validation.
@@ -118,11 +154,11 @@ identity/regmap and reads exactly 00 immediately before the write, then verifies
 01. This one exit attempt is explicitly exempt from runtime spacing/budget;
 there is no retry. If the latest evaluation disallowed charging, or management
 has stopped on a fault, it leaves enable unchanged and logs why. Unowned initial
-00 is never restored by remove. Shutdown only stops work and never writes.
+00 is never restored by remove. Shutdown stops work and extinguishes both LED triggers; it never writes charger registers.
 
 The freezable queue does not pet during suspend. Unload, shutdown and faults
 stop pets; the inherited watchdog remains active. After an actual watchdog
-bite, reconnect USB even if policy has recovered. Polling may miss brief USB
+bite, reconnect USB even if policy has recovered. Coalesced IRQ work (or old-DTB polling) may miss very brief USB
 edges. Disabling battery charge does not prove that all external power is off.
 
 ## Status and diagnostics
@@ -130,7 +166,7 @@ edges. Disabling battery charge does not prove that all external power is off.
 Confirmed offline means Discharging. Online FULL means Full at SOC >=98%,
 otherwise Not charging. Otherwise Charging requires actual 1042=01, positive
 measured current and successful feeding; other online states are Not charging.
-Initial or >20-second stale samples do not claim Charging. ONLINE returns no
+Initial or >60-second stale samples do not claim Charging. ONLINE returns no
 data until a fresh USB observation. Both USB and battery consumers receive
 change events. FG falls back to Unknown if this supply is absent.
 
@@ -188,3 +224,17 @@ done
 This project implementation uses standard Linux regmap, IIO and power-supply APIs under its GPL-2.0-only file notices. The register map and board policy were developed from stock/downstream hardware descriptions and project read-only register observations, followed by bounded enable/watchdog experiments; they are not a newly imported vendor driver. A complete historical derivation audit has not been established. The three charger register addresses written are `0x1070/0x1643/0x1042`, with four call sites described above; these writes can change charging behavior. The standard ADC provider performs its own conversion operations, so the charger write list is not a claim that no other PMIC block is written.
 
 项目实现使用标准 regmap／IIO／power_supply API，文件声明 GPL-2.0-only；寄存器与策略来自原厂／下游硬件描述、项目只读观测及后续限范围实验，不是新导入的厂商驱动，完整历史推导归属仍未独立核清。会写的充电地址只有 `0x1070/0x1643/0x1042`（上文四处调用），可能改变充电行为；标准 ADC 提供者另有转换操作。自然充满／再充电、挂起、长期和多温度点仍未验证，无快充，电脑 USB 口屏亮时可能净放电。
+
+## Kernel charge indicator / 内核充电指示灯
+
+`dby-chg-red` and `dby-chg-green` simple LED triggers replace the userspace
+helper, udev rule, timer and shutdown services. Board LED default triggers bind
+them to the upstream LPG driver. After each published sample: offline is off;
+FG Full or capacity >=90% is green; below 10% is red; otherwise yellow (both).
+Missing/Unknown FG data leaves the LEDs unchanged. Red/green levels 140/240
+retain the stock 70/255 and 120/255 ratios for LPG max_brightness=511.
+Unchanged levels are not sent again; late LED registration inherits the trigger
+brightness. Remove and shutdown turn both triggers off; remove also unregisters
+them. The earlier userspace LED behavior was observed on one tablet; hardware
+IRQs, thirty-second policy sampling and kernel LED control are offline-only (O)
+until this revision is tested on the device.

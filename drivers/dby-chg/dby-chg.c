@@ -2,6 +2,8 @@
 /* PM8150B guarded watchdog management; hardware watchdog remains enabled. */
 #include <linux/debugfs.h>
 #include <linux/iio/consumer.h>
+#include <linux/interrupt.h>
+#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -63,6 +65,8 @@ struct dby_chg {
 	u64 start_ms, last_attempt_ms, last_log_ms;
 	struct dby_chg_snapshot latest;
 	struct dentry *debug_dir;
+	struct led_trigger *red, *green;
+	unsigned int red_brightness, green_brightness;
 };
 static const unsigned int sample_regs[CHG_NREG] = {
 	0x1006, 0x1007, 0x1070, 0x1206, 0x1306, 0x1042
@@ -146,6 +150,50 @@ static void chg_notify(struct dby_chg *chg)
 		power_supply_put(fg);
 	}
 }
+/* operation_lock held; LPG max=511, stock ratios 70/255 and 120/255. */
+static void chg_led_set(struct dby_chg *chg, unsigned int red, unsigned int green)
+{
+	if (red != chg->red_brightness) {
+		led_trigger_event(chg->red, red);
+		chg->red_brightness = red;
+	}
+	if (green != chg->green_brightness) {
+		led_trigger_event(chg->green, green);
+		chg->green_brightness = green;
+	}
+}
+static void chg_led_update(struct dby_chg *chg, const struct dby_chg_sample *s)
+{
+	struct power_supply *fg;
+	union power_supply_propval status;
+	int ret, online = dby_chg_online(s);
+
+	if (online < 0 || s->capacity_error)
+		return;
+	fg = power_supply_get_by_name("dby-fg");
+	if (!fg)
+		return;
+	/* Read after publishing: FG delegates STATUS to our current snapshot. */
+	ret = power_supply_get_property(fg, POWER_SUPPLY_PROP_STATUS, &status);
+	power_supply_put(fg);
+	if (ret || status.intval == POWER_SUPPLY_STATUS_UNKNOWN)
+		return;
+	if (!online)
+		chg_led_set(chg, 0, 0);
+	else if (status.intval == POWER_SUPPLY_STATUS_FULL || s->capacity >= 90)
+		chg_led_set(chg, 0, 240);
+	else if (s->capacity < 10)
+		chg_led_set(chg, 140, 0);
+	else
+		chg_led_set(chg, 140, 240);
+}
+static void chg_led_unregister(void *data)
+{
+	struct dby_chg *chg = data;
+
+	led_trigger_unregister_simple(chg->green);
+	led_trigger_unregister_simple(chg->red);
+}
 /* Keep the fixed write operands visible as separate audited call sites. */
 static noinline int chg_enable_off(struct dby_chg *chg)
 {
@@ -191,9 +239,8 @@ static int chg_toggle(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	s->sample.reg[CHG_ENABLE] = readback;
 	return 0;
 }
-static void chg_work(struct work_struct *work)
+static void chg_evaluate(struct dby_chg *chg)
 {
-	struct dby_chg *chg = container_of(to_delayed_work(work), struct dby_chg, work);
 	struct dby_chg_snapshot s, old;
 	u64 now;
 	bool event, summary;
@@ -226,6 +273,12 @@ static void chg_work(struct work_struct *work)
 	now = chg_now(chg);
 	pet_reason = dby_chg_decide(&s.sample, &s.state, now,
                              s.attempts, chg->last_attempt_ms);
+	/* An early IRQ samples policy without inventing a feeding failure.
+	 * A recent successful pet remains valid across a brief unplug/replug;
+	 * every current health gate and the terminal fault latch still apply. */
+	if (pet_reason == CHG_TOO_SOON && !toggle_error && !s.control.stopped &&
+	    s.pets)
+		s.feeding = true;
 	s.reason |= pet_reason | s.control.stopped;
 	if (!pet_reason && !toggle_error && !s.control.stopped) {
 		BUILD_BUG_ON(DBY_CHG_PET_REG != 0x1643 || DBY_CHG_PET_VALUE != 0x01);
@@ -246,6 +299,7 @@ static void chg_work(struct work_struct *work)
 	s.evaluated = true;
 	dby_chg_pause_update(&s.pause, dby_chg_online(&s.sample), s.feeding, s.sampled_ms);
 	chg_publish(chg, &s);
+	chg_led_update(chg, &s.sample);
 	event = dby_chg_event(old.evaluated, dby_chg_online(&old.sample),
 		 dby_chg_online(&s.sample), old.feeding, s.feeding,
 		 old.state.full, s.state.full, old.reason, s.reason) ||
@@ -265,6 +319,62 @@ static void chg_work(struct work_struct *work)
 		queue_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(DBY_CHG_INTERVAL_MS));
 	mutex_unlock(&chg->operation_lock);
 	chg_notify(chg);
+}
+static void chg_work(struct work_struct *work)
+{
+	struct dby_chg *chg = container_of(to_delayed_work(work), struct dby_chg, work);
+
+	chg_evaluate(chg);
+}
+static irqreturn_t chg_changed_irq(int irq, void *data)
+{
+	struct dby_chg *chg = data;
+
+	mutex_lock(&chg->operation_lock);
+	if (!chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->work, 0);
+	mutex_unlock(&chg->operation_lock);
+	return IRQ_HANDLED;
+}
+static irqreturn_t chg_bark_irq(int irq, void *data)
+{
+	struct dby_chg *chg = data;
+
+	dev_warn_once(chg->dev, "wdog-bark: checking health before watchdog pet\n");
+	/* Fresh reads, policy, pet spacing and fault latch share the worker path. */
+	chg_evaluate(chg);
+	return IRQ_HANDLED;
+}
+static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
+{
+	static const char * const names[] = {
+		"chg-state-change", "usbin-plugin", "wdog-bark",
+	};
+	int irqs[ARRAY_SIZE(names)], i, ret;
+
+	/* Old DTBs have no resources. Do not leave a partial IRQ set enabled. */
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		irqs[i] = platform_get_irq_byname(pdev, names[i]);
+		if (irqs[i] == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		if (irqs[i] < 0)
+			goto polling;
+	}
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		ret = devm_request_threaded_irq(chg->dev, irqs[i], NULL,
+			i == 2 ? chg_bark_irq : chg_changed_irq,
+			IRQF_ONESHOT, names[i], chg);
+		if (ret) {
+			while (i-- > 0)
+				devm_free_irq(chg->dev, irqs[i], chg);
+			return dev_err_probe(chg->dev, ret, "cannot request charger IRQs\n");
+		}
+	}
+	dev_info(chg->dev, "three charger IRQs active; 30-second periodic sampling\n");
+	return 0;
+polling:
+	dev_info(chg->dev, "charger IRQs unavailable; using 30-second polling\n");
+	return 0;
 }
 static enum power_supply_property chg_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE, POWER_SUPPLY_PROP_STATUS,
@@ -363,12 +473,24 @@ static int chg_probe(struct platform_device *pdev)
 	mutex_init(&chg->operation_lock);
 	spin_lock_init(&chg->status_lock);
 	INIT_DELAYED_WORK(&chg->work, chg_work);
+	/* IRQs may fire as soon as requested; no work until probe commits. */
+	chg->stopping = true;
 	chg->start_ms = div_u64(ktime_get_boottime_ns(), NSEC_PER_MSEC);
 	config.drv_data = chg;
 	config.fwnode = dev_fwnode(dev);
 	chg->psy = devm_power_supply_register(dev, &chg_desc, &config);
 	if (IS_ERR(chg->psy))
 		return PTR_ERR(chg->psy);
+	led_trigger_register_simple("dby-chg-red", &chg->red);
+	led_trigger_register_simple("dby-chg-green", &chg->green);
+	ret = devm_add_action_or_reset(dev, chg_led_unregister, chg);
+	if (ret)
+		return ret;
+	if (!chg->red || !chg->green)
+		return -ENOMEM;
+	ret = chg_request_irqs(pdev, chg);
+	if (ret)
+		return ret;
 	/* Reject unsupported enable states before the float write. */
 	ret = regmap_read(chg->map, DBY_CHG_ENABLE_REG, &value);
 	ret = dby_chg_enable_probe(&chg->latest.control, ret, value);
@@ -393,7 +515,10 @@ static int chg_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chg);
 	chg->debug_dir = debugfs_create_dir("dby-chg", NULL);
 	debugfs_create_file("status", 0444, chg->debug_dir, chg, &chg_status_fops);
+	mutex_lock(&chg->operation_lock);
+	chg->stopping = false;
 	queue_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(DBY_CHG_FIRST_MS));
+	mutex_unlock(&chg->operation_lock);
 	dev_info(dev, "charging manager active; temperature model provisional; replug USB after watchdog bite\n");
 	return 0;
 }
@@ -404,6 +529,7 @@ static void chg_stop(struct platform_device *pdev)
 
 	mutex_lock(&chg->operation_lock);
 	WRITE_ONCE(chg->stopping, true);
+	chg_led_set(chg, 0, 0);
 	mutex_unlock(&chg->operation_lock);
 	cancel_delayed_work_sync(&chg->work);
 	s = chg_snapshot(chg);

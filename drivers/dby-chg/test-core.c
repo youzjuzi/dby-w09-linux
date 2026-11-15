@@ -53,8 +53,8 @@ int main(void)
  int volts[]={-1,0,4430000,4430001};
  for(int i=0;i<4;i++){s=good();s.voltage_uv=volts[i];assert(!!decision(s)==(i!=2));}
  s=good();
- assert(dby_chg_decide(&s,&st,10999,1,1000)&CHG_TOO_SOON);
- assert(!dby_chg_decide(&s,&st,11000,1,1000));
+ assert(dby_chg_decide(&s,&st,30999,1,1000)&CHG_TOO_SOON);
+ assert(!dby_chg_decide(&s,&st,31000,1,1000));
  assert(dby_chg_decide(&s,&st,999,1,1000)&CHG_TOO_SOON);
  st=full();assert(!dby_chg_decide(&s,&st,180000,0,0)); /* FULL now disables via 1042, pets continue. */
  s.voltage_uv=4250000;dby_chg_update(&st,&s,190000);assert(st.full);
@@ -95,8 +95,8 @@ int main(void)
  unsigned long long first=DBY_CHG_FIRST_MS;
  assert(first==2000);
  assert(!dby_chg_decide(&s,&st,first,0,0));
- assert(dby_chg_decide(&s,&st,first+9999,1,first)&CHG_TOO_SOON);
- assert(!dby_chg_decide(&s,&st,first+10000,1,first));
+ assert(dby_chg_decide(&s,&st,first+29999,1,first)&CHG_TOO_SOON);
+ assert(!dby_chg_decide(&s,&st,first+30000,1,first));
  dby_chg_update(&st,&s,first);
  for(int i=1;i<18;i++)dby_chg_update(&st,&s,first+i*10000);
  assert(!st.full);

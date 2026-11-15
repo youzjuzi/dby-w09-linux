@@ -4,5 +4,3 @@ systemd/system/timers.target.wants/dby-w09-rtc-save.timer
 systemd/system/multi-user.target.wants/dby-w09-display-watchdog.service
 systemd/system/multi-user.target.wants/dby-w09-audio.service
 systemd/user/default.target.wants/dby-w09-powerkey.service
-systemd/system/multi-user.target.wants/dby-w09-charge-led-off.service
-systemd/system/timers.target.wants/dby-w09-charge-led.timer

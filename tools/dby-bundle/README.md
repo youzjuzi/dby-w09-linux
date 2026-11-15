@@ -153,12 +153,12 @@ GNOME switching and reboot persistence passed on one tablet (H + R, 2026-11-15).
 gadget uses kernel-generated addresses and no serial string; its network matches
 `usb0` by name. No fixed device identity is embedded in public sources.
 
-The charging indicator overlay uses a oneshot helper triggered by charger/fuel-gauge
-uevents, LED registration and a 60-second timer; a separate shutdown unit turns
-both LEDs off after updates stop. Red/green brightness ratios (70/255, 120/255)
-come from the owner-supplied runtime FDT. A gauge that is not ready yet is skipped
-without failing the unit. Charging, unplug and reboot behaviour passed on one tablet
-(H + R, 2026-11-15).
+The charging indicator is driven by `dby-chg-red` / `dby-chg-green` kernel
+LED triggers bound to the upstream PM8150L LPG LEDs. The userspace helper,
+udev rule, timer and shutdown services have been removed. Unknown fuel-gauge
+data preserves the previous light state; remove/shutdown extinguish both LEDs.
+The IRQ/kernel-trigger revision is offline-only (O), pending device validation.
+See [charger policy and hardware ownership](../../drivers/dby-chg/README.md).
 
 The initramfs retains the read-only p1/device image and module binding contract.
 After chroot, before `/sbin/init`, it reads the bounded seed file on read-only p1.
