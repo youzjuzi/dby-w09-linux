@@ -111,3 +111,10 @@ Power-key tap/hold and cover (lid) screen blanking were validated on one tablet 
 This is an independent project with no affiliation to Huawei, HarmonyOS, MatePad, Qualcomm or Ubuntu; names remain their owners' trademarks. The detailed dates and evidence boundaries in the status page apply to each feature.
 
 Speaker builds require owner-supplied private configuration tables; see [preparation and build instructions](drivers/dby-tfa9874/README.md). The source tree contains no original amplifier sequences; generated headers and modules containing the data are not for redistribution.
+
+### GPIO vibrator candidate (O)
+
+The device pack includes upstream `gpio-vibra.ko` and its dependency closure.
+The matching board DT describes TLMM GPIO72; OF modalias loading exposes a
+`gpio-vibrator` evdev device with FF_RUMBLE. Motor operation awaits device
+validation (U). Idea from CoWave-Fall's linux-on-arm-matepad11; reimplemented, no code copied.
