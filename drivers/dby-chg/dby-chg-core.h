@@ -86,6 +86,7 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_FIRST_MS 2000u
 #define DBY_CHG_LOG_MS 600000u
 #define DBY_CHG_INTERVAL_MS 30000u
+#define DBY_CHG_SETTLE_MS 2000u
 #define DBY_CHG_FULL_MS 180000u
 #define DBY_CHG_TEMP_MIN 120
 #define DBY_CHG_TEMP_MAX 420

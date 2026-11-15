@@ -81,6 +81,11 @@ other values reject probe. An observed 01 ends that permission. Later unowned
 
 First work is scheduled about two seconds after probe, then every thirty seconds.
 `chg-state-change` and both `usbin-plugin` edges queue an immediate sample.
+That evaluation schedules one follow-up after two seconds, then returns to the
+thirty-second period: FG current refreshes roughly once a second and can still
+be negative at the IRQ. Another state/plug IRQ restarts this sequence; bark does
+not start, consume or reschedule the follow-up. All existing policy/write gates
+and the rule that negative current is Not charging remain unchanged.
 The threaded `wdog-bark` handler warns once and runs the same fresh-sample,
 policy and pet path immediately, including the thirty-second minimum pet spacing.
 An early healthy IRQ can retain the feeding status of a recent successful pet,

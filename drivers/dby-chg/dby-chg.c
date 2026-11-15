@@ -62,6 +62,7 @@ struct dby_chg {
 	struct mutex operation_lock;
 	spinlock_t status_lock;
 	bool stopping;
+	bool settle_pending;
 	u64 start_ms, last_attempt_ms, last_log_ms;
 	struct dby_chg_snapshot latest;
 	struct dentry *debug_dir;
@@ -239,7 +240,7 @@ static int chg_toggle(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	s->sample.reg[CHG_ENABLE] = readback;
 	return 0;
 }
-static void chg_evaluate(struct dby_chg *chg)
+static void chg_evaluate(struct dby_chg *chg, bool from_work)
 {
 	struct dby_chg_snapshot s, old;
 	u64 now;
@@ -315,8 +316,16 @@ static void chg_evaluate(struct dby_chg *chg)
 		chg->last_log_ms = s.sampled_ms;
 	/* Suspend stops petting. After a watchdog bite, USB must be replugged
 	 * (device observation 2026-11-05); petting alone cannot restart charging. */
-	if (!chg->stopping)
-		queue_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(DBY_CHG_INTERVAL_MS));
+	if (from_work && !chg->stopping) {
+		unsigned int delay = chg->settle_pending ? DBY_CHG_SETTLE_MS : DBY_CHG_INTERVAL_MS;
+
+		chg->settle_pending = false;
+		/* This sample covers IRQs received before taking operation_lock.
+		 * Replace any queued immediate run with the single settle sample.
+		 * Later IRQs set the flag again and restart the sequence. Bark
+		 * neither consumes the flag nor changes the work deadline. */
+		mod_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(delay));
+	}
 	mutex_unlock(&chg->operation_lock);
 	chg_notify(chg);
 }
@@ -324,15 +333,17 @@ static void chg_work(struct work_struct *work)
 {
 	struct dby_chg *chg = container_of(to_delayed_work(work), struct dby_chg, work);
 
-	chg_evaluate(chg);
+	chg_evaluate(chg, true);
 }
 static irqreturn_t chg_changed_irq(int irq, void *data)
 {
 	struct dby_chg *chg = data;
 
 	mutex_lock(&chg->operation_lock);
-	if (!chg->stopping)
+	if (!chg->stopping) {
+		chg->settle_pending = true;
 		mod_delayed_work(system_freezable_wq, &chg->work, 0);
+	}
 	mutex_unlock(&chg->operation_lock);
 	return IRQ_HANDLED;
 }
@@ -342,7 +353,7 @@ static irqreturn_t chg_bark_irq(int irq, void *data)
 
 	dev_warn_once(chg->dev, "wdog-bark: checking health before watchdog pet\n");
 	/* Fresh reads, policy, pet spacing and fault latch share the worker path. */
-	chg_evaluate(chg);
+	chg_evaluate(chg, false);
 	return IRQ_HANDLED;
 }
 static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
