@@ -171,7 +171,7 @@ unchanged.
 | etc/ssh/sshd_config.d/00-dby-publickey.conf | Old root public-key-only SSH mechanism | Keep |
 | etc/systemd/system/ssh.service.d/20-dby-hostkeys.conf | Old first-boot host-key generation and config check | Keep |
 | etc/NetworkManager/conf.d/91-dby-usb-unmanaged.conf | Old split: networkd owns usb0, NM owns wireless | Keep |
-| etc/UPower/UPower.conf.d/90-dby-battery-policy.conf | Old policy for the read-only gauge's unknown state | Omit, no desktop power stack |
+| etc/UPower/UPower.conf.d/90-dby-battery-policy.conf | Power off at critical battery; dby-chg supplies online/status | Omit, no desktop power stack |
 | etc/xdg/monitors.xml | Old GDM/initial-setup orientation, scale and 120 Hz mode | Omit, no GUI |
 | etc/fstab | Existing ubuntu-root volume contract | Keep |
 | usr/lib/dby/dby-seed-apply | Stage 5 bounded seed applier | Keep |

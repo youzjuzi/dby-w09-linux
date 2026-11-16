@@ -67,6 +67,7 @@ struct dby_chg_snapshot {
 	struct dby_chg_icl icl;
 	struct dby_chg_thermal thermal;
 	int chg_temp_mc, chg_temp_error, pd9v_max_ma;
+	bool pd_low_batt;
 	u64 sampled_ms;
 	unsigned int reason, attempts, pets, write_errors;
 	int write_error;
@@ -319,6 +320,7 @@ static int chg_icl_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	/* Extended codes require a live fixed-PD contract and both ceilings. */
 	if (target > DBY_CHG_ICL_5V_MAX &&
 	    (dby_chg_online(&s->sample) != 1 || icl->source_online != 1 ||
+	     s->pd_low_batt ||
 	     icl->source != CHG_SRC_PD || icl->voltage_uv < 8500000 ||
 	     (int)target * 50 > s->pd9v_max_ma || (int)target * 50 > s->thermal.cap_ma ||
 	     (int)target * DBY_CHG_ICL_STEP_UA > icl->current_ua))
@@ -354,7 +356,7 @@ static int chg_icl_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	}
 	return ret;
 }
-/* operation_lock held; the sole allowance write site accepts only 00/02. */
+/* operation_lock held; the sole allowance write site accepts only 00/02/08. */
 static int chg_allow_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 			 unsigned int target)
 {
@@ -362,8 +364,10 @@ static int chg_allow_set(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	int ret;
 
 	BUILD_BUG_ON(DBY_CHG_ALLOW_REG != 0x1344 ||
-		     DBY_CHG_ALLOW_DEFAULT != 0x00 || DBY_CHG_ALLOW_9V != 0x02);
-	if (target != DBY_CHG_ALLOW_DEFAULT && target != DBY_CHG_ALLOW_9V)
+		     DBY_CHG_ALLOW_DEFAULT != 0x00 || DBY_CHG_ALLOW_9V != 0x02 ||
+		     DBY_CHG_ALLOW_TRANSITION != 0x08);
+	if (target != DBY_CHG_ALLOW_DEFAULT && target != DBY_CHG_ALLOW_9V &&
+	    target != DBY_CHG_ALLOW_TRANSITION)
 		return -EINVAL;
 	ret = chg_identity(chg);
 	if (!ret && dev_get_regmap(chg->dev->parent, NULL) != chg->map)
@@ -508,9 +512,9 @@ static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
 		return;
 	target = dby_chg_icl_target(online, icl->last_online,
 		icl->source_online, icl->source, icl->voltage_uv, icl->current_ua,
-		s->pd9v_max_ma, s->thermal.cap_ma);
+		s->pd9v_max_ma, s->thermal.cap_ma, s->pd_low_batt);
 	allow = dby_chg_allow_target(online, icl->source_online,
-		icl->source, icl->voltage_uv);
+		icl->source, icl->voltage_uv, icl->current_ua);
 	if (online == 1 && target) {
 		/* Clear a previous 9 V allowance before raising a 5 V limit. */
 		ret = 0;
@@ -522,8 +526,9 @@ static void chg_icl_update(struct dby_chg *chg, struct dby_chg_snapshot *s)
 			ret = icl->opt_error = chg_opt_set(chg, s, DBY_CHG_OPT_ON);
 		if (!ret)
 			ret = icl->ovr_error = chg_ovr_set(chg, s, DBY_CHG_OVR_ON);
-		/* Never accept 9 V before current and override are read back. */
-		if (!ret && allow == DBY_CHG_ALLOW_9V)
+		/* Standby 5 V/<=500 mA first verifies ICL 0A, then permits the
+		 * ramp with 08. The settled 9 V contract selects 02 instead. */
+		if (!ret && allow != DBY_CHG_ALLOW_DEFAULT)
 			ret = icl->allow_error = chg_allow_set(chg, s, allow);
 	} else {
 		ret = icl->allow_error = chg_allow_set(chg, s, DBY_CHG_ALLOW_DEFAULT);
@@ -604,6 +609,8 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 	}
 	s = old = chg_snapshot(chg);
 	chg_sample(chg, &s.sample);
+	s.pd_low_batt = dby_chg_low_batt(s.pd_low_batt,
+		s.sample.voltage_error, s.sample.voltage_uv);
 	chg_thermal_sample(chg, &s);
 	now = chg_now(chg);
 	mutex_lock(&chg_limits_lock);
@@ -661,10 +668,11 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		old.icl.source != s.icl.source ||
 		old.icl.voltage_uv != s.icl.voltage_uv || old.icl.current_ua != s.icl.current_ua ||
 		old.icl.errors != s.icl.errors || old.pd9v_max_ma != s.pd9v_max_ma ||
-		old.thermal.cap_ma != s.thermal.cap_ma || old.chg_temp_error != s.chg_temp_error;
+		old.thermal.cap_ma != s.thermal.cap_ma || old.chg_temp_error != s.chg_temp_error ||
+		old.pd_low_batt != s.pd_low_batt;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u pd_low_batt=%u\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
@@ -676,7 +684,7 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 			s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
 			s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error,
 			s.chg_temp_mc, s.chg_temp_error, s.pd9v_max_ma, s.thermal.cap_ma,
-			s.thermal.drops, s.thermal.rises);
+			s.thermal.drops, s.thermal.rises, s.pd_low_batt);
 	if (summary)
 		chg->last_log_ms = s.sampled_ms;
 	/* Suspend stops petting. After a watchdog bite, USB must be replugged
@@ -830,9 +838,9 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 	seq_printf(seq, "ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d\n",
 		s.icl.ovr_reg, s.icl.opt_reg, s.icl.ovr_writes, s.icl.opt_writes,
 		s.icl.ovr_read_error, s.icl.opt_read_error, s.icl.ovr_error, s.icl.opt_error);
-	seq_printf(seq, "chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u thermal_changed_ms=%llu\n",
+	seq_printf(seq, "chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u thermal_changed_ms=%llu pd_low_batt=%u\n",
 		s.chg_temp_mc, s.chg_temp_error, s.pd9v_max_ma, s.thermal.cap_ma,
-		s.thermal.drops, s.thermal.rises, s.thermal.changed_ms);
+		s.thermal.drops, s.thermal.rises, s.thermal.changed_ms, s.pd_low_batt);
 	dby_chg_prune(&s.control, now);
 	seq_printf(seq, "enable_reg=%02x want_enable=%u toggles_last_hour=%u toggle_budget_remaining=%u last_toggle_ms=%llu manage_stopped_reason=%#x owned_off=%u\n",
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
@@ -891,6 +899,8 @@ static int chg_probe(struct platform_device *pdev)
 	/* IRQs may fire as soon as requested; no work until probe commits. */
 	chg->stopping = true;
 	chg->latest.icl.last_online = -1;
+	/* Unknown initial voltage cannot authorize unrestricted 9 V current. */
+	chg->latest.pd_low_batt = true;
 	chg->latest.pd9v_max_ma = READ_ONCE(pd9v_max_ma);
 	chg->latest.thermal.cap_ma = chg->latest.pd9v_max_ma;
 	chg->latest.chg_temp_error = -ENODATA;

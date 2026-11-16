@@ -110,6 +110,10 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_ALLOW_REG 0x1344u
 #define DBY_CHG_ALLOW_DEFAULT 0x00u
 #define DBY_CHG_ALLOW_9V 0x02u
+#define DBY_CHG_ALLOW_TRANSITION 0x08u
+#define DBY_CHG_LOW_BATT_UV 3500000
+#define DBY_CHG_LOW_BATT_RELEASE_UV 3600000
+#define DBY_CHG_LOW_BATT_MAX_UA 1000000
 #define DBY_CHG_OVR_REG 0x1342u
 #define DBY_CHG_OVR_DEFAULT 0x00u
 #define DBY_CHG_OVR_ON 0x01u
@@ -163,17 +167,26 @@ static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
  }
  return direction;
 }
-static inline unsigned int dby_chg_allow_target(int online, int source_online,
- enum dby_chg_source source, int voltage_uv)
+static inline int dby_chg_low_batt(int previous, int error, int voltage_uv)
 {
- return online == 1 && source_online == 1 && source == CHG_SRC_PD &&
-  voltage_uv >= 8500000 ? DBY_CHG_ALLOW_9V : DBY_CHG_ALLOW_DEFAULT;
+ if (error || voltage_uv < DBY_CHG_LOW_BATT_UV) return 1;
+ if (voltage_uv >= DBY_CHG_LOW_BATT_RELEASE_UV) return 0;
+ return previous;
+}
+static inline unsigned int dby_chg_allow_target(int online, int source_online,
+ enum dby_chg_source source, int voltage_uv, int current_ua)
+{
+ if (online != 1 || source_online != 1 || source != CHG_SRC_PD)
+  return DBY_CHG_ALLOW_DEFAULT;
+ if (voltage_uv == 5000000 && current_ua > 0 && current_ua <= 500000)
+  return DBY_CHG_ALLOW_TRANSITION;
+ return voltage_uv >= 8500000 ? DBY_CHG_ALLOW_9V : DBY_CHG_ALLOW_DEFAULT;
 }
 /* Zero means no target/write; only confirmed unplug transitions restore.
  * Contract/Rp values are micro-units from the standard supplier interface. */
 static inline unsigned int dby_chg_icl_target(int online, int was_online,
  int source_online, enum dby_chg_source source, int voltage_uv, int current_ua,
- int pd9v_max_ma, int thermal_cap_ma)
+ int pd9v_max_ma, int thermal_cap_ma, int low_batt)
 {
  unsigned int target;
  int limit;
@@ -196,6 +209,8 @@ static inline unsigned int dby_chg_icl_target(int online, int was_online,
   limit = pd9v_max_ma;
   if (thermal_cap_ma < limit) limit = thermal_cap_ma;
   limit *= 1000;
+  if (low_batt && limit > DBY_CHG_LOW_BATT_MAX_UA)
+   limit = DBY_CHG_LOW_BATT_MAX_UA;
  }
  if (current_ua < limit) limit = current_ua;
  target = limit / DBY_CHG_ICL_STEP_UA;

@@ -71,7 +71,8 @@ The four original fixed charger write call sites remain unchanged:
 The additional `1370` ICL write site is shared by runtime changes and bounded
 restoration, with a hard range check `0x0A..0x3C` (codes above `28` only for fixed PD
 >=8.5 V within the selected and thermal ceilings). The `1344` allowance site
-accepts only `00` (firmware default) or `02` (FORCE_9V). The new `1342` site
+accepts only `00` (firmware default), `02` (FORCE_9V) or `08`
+(CONTINUOUS, fixed-PD 5 V/<=500 mA transition only). The new `1342` site
 accepts only `00/01`, and `1366` only `02/01` (automatic/override). Constants have compile-time
 assertions. No watchdog configuration or other charger register is written. Standard ADC5 measurements perform
 the provider's own ADC and EOC operations. Do not run concurrent charger
@@ -281,8 +282,9 @@ a PPS-capable source can still supply a fixed PDO. Active PPS/AVS (`ONLINE`
 | Online Type-C, Rp current >=3 A | `28` (2.0 A) | `00` | On: `01/01` |
 | Online Type-C, Rp >=1.5 A and <3 A | `1E` (1.5 A) | `00` | On: `01/01` |
 | Online Type-C, default Rp / PC port (<1.5 A) | No target; automatic mode | `00` | Off: `00/02` |
-| Online fixed PD, voltage >=8.5 V | min(contract, selected ceiling, thermal cap) / 50 mA | `02` | On: `01/01` |
-| Online fixed PD, exactly 5 V (including 0.5 A standby) | min(contract current, 2.0 A) / 50 mA | `00` | On: `01/01` |
+| Online fixed PD, voltage >=8.5 V | min(contract, selected ceiling, thermal cap, low-battery cap) / 50 mA | `02` | On: `01/01` |
+| Online fixed PD, 5 V and 0 < current <=0.5 A standby | `0A` (0.5 A), verified before allowance | `08` | On: `01/01` |
+| Online fixed PD, 5 V and current >0.5 A | min(contract current, 2.0 A) / 50 mA | `00` | On: `01/01` |
 | Active PPS/AVS, unknown source, other PD voltage below 8.5 V | No ICL change | `00` | Off: `00/02` |
 
 PD targets round down to 50 mA steps. 5 V targets remain at most `28` (2 A);
@@ -292,8 +294,10 @@ no target, keeping PC ports in firmware automatic mode instead of forcing
 not a general current-limit algorithm for other hardware.
 
 Enabling override applies `1370=target`, then `1366=01`, then `1342=01`; only
-after all three succeed may a 9 V contract set `1344=02`. On a managed 5 V
-contract, any previous 9 V allowance is cleared first. With override already
+after all three succeed may a 9 V contract set `1344=02`. Fixed-PD 5 V/<=500 mA
+standby verifies ICL `0A` before setting `1344=08`, allowing the voltage ramp;
+the established 9 V contract applies its current target before returning to
+`02`. Other managed 5 V contracts clear the previous allowance first. With override already
 on, unchanged option/override bytes are read and skipped; a changed target
 only writes ICL (and allowance if the voltage changes). Disabling follows
 `1344=00` → `1342=00` → `1366=02`; confirmed unplug then restores `1370=1E`.
@@ -394,6 +398,43 @@ The separate device procedure stops at battery >=38 C, charger >=75 C, any
 thermal drop, hard reset or a hot enclosure; its charger stop threshold is
 intentionally lower than the 80 C software derating threshold.
 
-本轮为离线候选（O）：合同可声明 9 V/3 A，默认仍限 1.5 A；参数与温控共同
-限制实际 ICL。5 V 上限仍为 2 A，原停充/喂狗门禁不变，不写 1570。高功率爬档
-与温升由用户验收，离线构建不代表 27 W 已验证。
+## PD transition and low battery guard
+
+The 2026-11-16 task supplied these observations for the preceding candidate:
+an empty battery at 0%, about 2.89 V, with maximum screen brightness saw the
+Lenovo source repeatedly attempt 9 V/3 A, enter 5 V/500 mA standby and hard
+reset before PS_RDY, with input absent and about -3.06 A battery current.
+At 31% with half brightness, the same request reached SNK_READY in about
+0.27 s without hard resets; battery current was +1.56–1.73 A and charger
+temperature 40.8–41.4 C. This shows the 3 A request can work, but does not
+establish which factor causes the empty-battery failure. The proposed input
+interruption/overvoltage explanation remains a hypothesis.
+
+The bounded workaround identifies a transition only from fixed-PD supplier
+ONLINE 1, exactly 5 V and positive current <=500 mA, while charger input is
+online. It verifies `1370=0A` and the existing override sequence before
+`1344=08`. Current errors or a failed preceding operation cannot authorize
+08. Non-PD, offline, latched management and exit still select `00`; PPS/AVS
+remain unsupported. The existing `allow_reg` event/summary/debugfs field
+shows `08` and then `02`; short transitions may complete between evaluations.
+No polling loop, delay or new register write site is added.
+
+A separate persistent `pd_low_batt` guard caps only fixed PD >=8.5 V at 1 A
+when measured battery voltage is below 3.5 V; it releases at >=3.6 V, retaining
+its previous state in between. It starts enabled until a >=3.6 V measurement,
+and voltage-read failures enable it conservatively. It is independent of the
+1500 mA thermal floor: the final target takes the smaller limit. Parameter
+changes/unplug do not erase the voltage hysteresis. All 5 V rules are unchanged.
+`pd_low_batt` is included in summary logs and debugfs for validation.
+
+The same task reported unintended overnight screen-on due to lid events,
+UPower's old Ignore policy, deep discharge and an unclean filesystem shutdown.
+The repository rootfs overlay now sets `CriticalPowerAction=PowerOff` and
+`AllowRiskyCriticalPowerAction=false`, since dby-chg provides online/status.
+This configuration is for future rootfs builds; the p1-only candidate does not
+install or update it on an existing card. No lid-sensor fix is included.
+
+本轮为离线修正候选（O）：固定 PD 待机先限 0.5 A 再设 allowance=08；9 V
+合同后回 02。低于 3.5 V 时 9 V 再限 1 A，达到 3.6 V 解除。空电池失败的主因
+仍未证实；过渡成功、低电量充电与回归效果待用户验收。UPower 关机策略只改
+仓库 rootfs overlay，不随 p1 包部署。
