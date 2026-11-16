@@ -48,7 +48,7 @@ OTG observation on one tablet: `usbin-plugin=0`, USB input absent, Type-C
 source/host, VBUS regulator enabled and charge indicator off. Thus the charger
 makes no control write or pet while OTG is confirmed absent at USBIN; the
 charger does not manage the OTG regulator. This IRQ revision still needs device
-validation. Fixed-PDO input-current control is an offline candidate described below. USB3,
+validation. Fixed-PDO input-current control is described below. USB3,
 PPS, Huawei SCP/FCP and wireless supply (independent MT5727 driver) remain future
 work and are not implemented here.
 
@@ -395,10 +395,8 @@ The supplied device observation has thermal-source register `1570=00`;
 stock was observed as `ca` and once as `00`. Hardware thermal regulation is
 therefore **probably disabled**, with the stock discrepancy unresolved. This
 change does not enable it and never writes `1570`. Software sampling is not
-continuous hardware thermal protection. The preceding bundle ramp is recorded
-below; actual input power, sustained operation with a case and the combined
-transition/low-battery behavior at the new default remain unverified for this
-candidate.
+continuous hardware thermal protection. The ramp is recorded below; actual
+input power and sustained operation with a case remain unmeasured.
 The separate device procedure stops at battery >=38 C, charger >=75 C, any
 thermal drop, hard reset or a hot enclosure; its charger stop threshold is
 intentionally lower than the 80 C software derating threshold.
@@ -430,9 +428,18 @@ The owner selected 2500 mA as the default: the observed 62 C is 8 C below the
 a case is the selection rationale; operation with a case was not tested here.
 The 22.5 W figure is the input ceiling, not measured input or battery power.
 The thermal floor/read-failure fallback remains 1500 mA; 5 V limits, parameter
-choices and all temperature thresholds remain unchanged. Device acceptance
-of this default together with the following transition and low-battery fix is
-still pending.
+choices and all temperature thresholds remain unchanged.
+
+Device acceptance (2026-11-16, H, bundle `20261116-3`, one tablet, 66%): the
+default 2500 mA gave `1370=32` on a Lenovo fixed 9 V/3 A contract with battery
+current +3.2–3.5 A; the transition was logged as `allow 08` (ICL `0a`) and
+then `02` about 0.28 s later, with no hard reset. A 3 A Rp charger gave
+`28/00/01/01`; unplug restored `1e/00/00/02`; a PC port stayed in firmware
+automatic mode; OTG enumerated a USB disk with no charger writes;
+`write_errors=0` throughout. About 100 s after boot (no case), the battery
+thermistor read 39.4 C and the cap dropped to 2250 mA, recovering to 2500 mA
+two minutes later; the fast rise and fall suggest board heat during boot rather
+than cell temperature (U). The low-battery screen-on 9 V case is not yet tested.
 
 ## PD transition and low battery guard
 
@@ -470,7 +477,7 @@ The repository rootfs overlay now sets `CriticalPowerAction=PowerOff` and
 This configuration is for future rootfs builds; the p1-only candidate does not
 install or update it on an existing card. No lid-sensor fix is included.
 
-本轮为离线修正候选（O）：固定 PD 待机先限 0.5 A 再设 allowance=08；9 V
-合同后回 02。低于 3.5 V 时 9 V 再限 1 A，达到 3.6 V 解除。空电池失败的主因
-仍未证实；过渡成功、低电量充电与回归效果待用户验收。UPower 关机策略只改
-仓库 rootfs overlay，不随 p1 包部署。
+固定 PD 待机先限 0.5 A 再设 allowance=08；9 V 合同后回 02。低于 3.5 V 时
+9 V 再限 1 A，达到 3.6 V 解除。过渡与回归已在设备上通过（H，见上节）；空电池
+失败的主因与低电量亮屏升压仍待验证。UPower 关机策略只改仓库 rootfs overlay，
+不随 p1 包部署。
