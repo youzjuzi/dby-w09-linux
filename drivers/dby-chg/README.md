@@ -258,7 +258,8 @@ confirmed; shutdown turn-off of the kernel-trigger LEDs has not been observed ye
 
 The board retains the owner stock 5 V / 2 A sink PDO and requests up to
 9 V / 3 A with 27 W operating sink power. The latter is a contract ceiling,
-not the default draw: the driver still defaults to 1.5 A at 9 V. Source PDOs and dual-role policy are unchanged.
+while the default input-current ceiling is 2.5 A at 9 V (22.5 W).
+Source PDOs and dual-role policy are unchanged.
 The charger links to the Type-C supply with standard `power-supplies`;
 `.external_power_changed` queues the existing work immediately without setting
 the two-second settle flag. An already pending IRQ settle deadline is preserved.
@@ -282,7 +283,7 @@ a PPS-capable source can still supply a fixed PDO. Active PPS/AVS (`ONLINE`
 | Online Type-C, Rp current >=3 A | `28` (2.0 A) | `00` | On: `01/01` |
 | Online Type-C, Rp >=1.5 A and <3 A | `1E` (1.5 A) | `00` | On: `01/01` |
 | Online Type-C, default Rp / PC port (<1.5 A) | No target; automatic mode | `00` | Off: `00/02` |
-| Online fixed PD, voltage >=8.5 V | min(contract, selected ceiling, thermal cap, low-battery cap) / 50 mA | `02` | On: `01/01` |
+| Online fixed PD, voltage >=8.5 V | min(contract, selected ceiling, thermal cap, low-battery cap) / 50 mA; default ceiling 2.5 A, thermal floor 1.5 A | `02` | On: `01/01` |
 | Online fixed PD, 5 V and 0 < current <=0.5 A standby | `0A` (0.5 A), verified before allowance | `08` | On: `01/01` |
 | Online fixed PD, 5 V and current >0.5 A | min(contract current, 2.0 A) / 50 mA | `00` | On: `01/01` |
 | Active PPS/AVS, unknown source, other PD voltage below 8.5 V | No ICL change | `00` | Off: `00/02` |
@@ -362,7 +363,9 @@ integration and the bounded board policy above.
 ## Fixed PD power ceiling and thermal derating
 
 `pd9v_max_ma` is a module parameter with mode `0644` (root writes). It accepts
-only `1500`, `2000`, `2250`, `2500`, `2750` or `3000`, default **1500**. Each
+only `1500`, `2000`, `2250`, `2500`, `2750` or `3000`, default **2500**. The thermal
+floor and temperature-read failure fallback remain **1500 mA**, independently
+of this default. Each
 accepted write schedules an immediate evaluation on the existing work queue,
 without setting an IRQ settle flag. Device registration/removal and scheduling
 are serialized; parameter writes cannot queue work after detach. No new poller
@@ -392,11 +395,44 @@ The supplied device observation has thermal-source register `1570=00`;
 stock was observed as `ca` and once as `00`. Hardware thermal regulation is
 therefore **probably disabled**, with the stock discrepancy unresolved. This
 change does not enable it and never writes `1570`. Software sampling is not
-continuous hardware thermal protection. The >13.5 W ramp, actual input current,
-temperature behavior and sustainable default are unverified for this candidate.
+continuous hardware thermal protection. The preceding bundle ramp is recorded
+below; actual input power, sustained operation with a case and the combined
+transition/low-battery behavior at the new default remain unverified for this
+candidate.
 The separate device procedure stops at battery >=38 C, charger >=75 C, any
 thermal drop, hard reset or a hot enclosure; its charger stop threshold is
 intentionally lower than the 80 C software derating threshold.
+
+## Owner-supplied PD ramp observations (2026-11-16)
+
+The task book supplies hardware evidence (H) from the owner's ramp log and
+separate 1500 mA baseline, using bundle `20261116-1`, a Lenovo source with a
+9 V / 3 A contract, half screen brightness and the case removed. The 2000 mA
+step ran for 9 minutes; the higher steps ran for 5 minutes each at the owner's
+request. The separate 1500 mA baseline duration is unspecified. SOC and step
+duration differ, so these are not controlled comparisons under identical
+conditions. Enclosure feel is the owner's observation (R).
+
+| Ceiling (mA) | ICL | Stable battery current | Battery temperature | Charger temperature | SOC | Enclosure feel (R) |
+|---|---|---|---|---|---|---|
+| 1500 | `1e` | +1.6–1.7 A | 28–29 C | 41–42 C | 31% | — |
+| 2000 | `28` | +2.8–3.0 A | 29–30 C | 52–53 C | 33–39% | — |
+| 2250 | `2d` | +3.1–3.4 A | 31 C | 58.5 C | 39–43% | Barely noticeable |
+| 2500 | `32` | +3.4–3.6 A | 31.5–32 C | 62 C | 44–47% | Warm |
+| 2750 | `37` | +3.6–3.74 A | 32.6 C | 65 C | 47–52% | Warm |
+| 3000 | `3c` | +3.7–3.9 A | 33.3 C | 68.2 C | 52–57% | — |
+
+The supplied record reports `thermal_drops=0`, no hard reset,
+`write_errors=0`, `1006=03` and `allow=02` throughout. Above 2500 mA, each
+step added roughly 0.2 A of battery current and 3 C of charger temperature.
+The owner selected 2500 mA as the default: the observed 62 C is 8 C below the
+70 C recovery gate and 18 C below the 80 C derating gate. Leaving margin for
+a case is the selection rationale; operation with a case was not tested here.
+The 22.5 W figure is the input ceiling, not measured input or battery power.
+The thermal floor/read-failure fallback remains 1500 mA; 5 V limits, parameter
+choices and all temperature thresholds remain unchanged. Device acceptance
+of this default together with the following transition and low-battery fix is
+still pending.
 
 ## PD transition and low battery guard
 

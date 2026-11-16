@@ -118,7 +118,7 @@ static const struct kernel_param_ops chg_pd9v_ops = {
 	.set = chg_set_pd9v, .get = param_get_int,
 };
 module_param_cb(pd9v_max_ma, &chg_pd9v_ops, &pd9v_max_ma, 0644);
-MODULE_PARM_DESC(pd9v_max_ma, "Fixed PD 9V current ceiling: 1500,2000,2250,2500,2750,3000 mA; default 1500");
+MODULE_PARM_DESC(pd9v_max_ma, "Fixed PD 9V current ceiling: 1500,2000,2250,2500,2750,3000 mA; default 2500");
 static void chg_parameter_detach(void *data)
 {
 	struct dby_chg *chg = data;

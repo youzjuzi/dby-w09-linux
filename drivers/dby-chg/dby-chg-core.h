@@ -102,7 +102,8 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 #define DBY_CHG_ICL_MAX 0x3Cu
 #define DBY_CHG_ICL_5V_MAX 0x28u
 #define DBY_CHG_ICL_MAX_UA 2000000
-#define DBY_CHG_PD9V_DEFAULT_MA 1500
+#define DBY_CHG_PD9V_DEFAULT_MA 2500
+#define DBY_CHG_PD9V_FLOOR_MA 1500
 #define DBY_CHG_PD9V_MAX_MA 3000
 #define DBY_CHG_THERMAL_STEP_MA 250
 #define DBY_CHG_THERMAL_RISE_MS 60000u
@@ -150,11 +151,11 @@ static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
  }
  old = t->cap_ma;
  if (batt_error || chip_error) {
-  t->cap_ma = DBY_CHG_PD9V_DEFAULT_MA;
+  t->cap_ma = DBY_CHG_PD9V_FLOOR_MA;
  } else if (batt_decic >= 380 || chip_mc >= 80000) {
   t->cap_ma -= DBY_CHG_THERMAL_STEP_MA;
-  if (t->cap_ma < DBY_CHG_PD9V_DEFAULT_MA)
-   t->cap_ma = DBY_CHG_PD9V_DEFAULT_MA;
+  if (t->cap_ma < DBY_CHG_PD9V_FLOOR_MA)
+   t->cap_ma = DBY_CHG_PD9V_FLOOR_MA;
  } else if (online == 1 && batt_decic <= 360 && chip_mc <= 70000 &&
             now - t->changed_ms >= DBY_CHG_THERMAL_RISE_MS) {
   t->cap_ma += DBY_CHG_THERMAL_STEP_MA;
@@ -204,7 +205,7 @@ static inline unsigned int dby_chg_icl_target(int online, int was_online,
  limit = DBY_CHG_ICL_MAX_UA;
  if (voltage_uv >= 8500000) {
   if (!dby_chg_pd9v_valid(pd9v_max_ma) ||
-      thermal_cap_ma < DBY_CHG_PD9V_DEFAULT_MA)
+      thermal_cap_ma < DBY_CHG_PD9V_FLOOR_MA)
    return 0;
   limit = pd9v_max_ma;
   if (thermal_cap_ma < limit) limit = thermal_cap_ma;
