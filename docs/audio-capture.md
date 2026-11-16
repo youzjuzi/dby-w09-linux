@@ -1,6 +1,6 @@
 # Onboard audio startup and validation
 
-当前方案：内核按设备树 modalias 与延迟探测自动加载板载音频（O，实机待验证）。UCM2、WirePlumber 的 S16LE 规则、Mic 初始化参数和喇叭硬件档均不变。旧脚本方案的六次冷启动通过只属于旧包，不作为本方案成功证据。无喇叭保护算法，长期可靠性和物理麦克风映射仍 U。
+当前方案：内核按设备树 modalias 与延迟探测自动加载板载音频。包 `20261116-13` 在一台平板 6 次冷启动、2 次热重启全部通过：无需手动操作，登录后即有桌面喇叭与四路麦克风；`devices_deferred` 每次为空，无 `AFE failed to vote`；ADSP 上线 6.8–10.1 s，Mic 初始化完成 8.2–11.5 s（随开机快慢变化）；播放 `S16_LE`，用户确认音乐与录音正常（H + R，2026-11-17）。UCM2、WirePlumber 的 S16LE 规则、Mic 初始化参数和喇叭硬件档均不变。无喇叭保护算法，长期可靠性和物理麦克风映射仍 U。
 
 The 44-entry onboard-audio blacklist and the two-stage `dby-audio-start` loader
 are removed. The blacklist was a conservative bring-up fallback; no device
@@ -243,9 +243,9 @@ same boot.
 
 ## Reading the stage history / 历史阶段读法
 
-Sections naming packages `20261102-11` through `-18` describe those historical stages only. Their “speakers remain U”, capture-only and opt-in startup statements do not describe the later S16LE desktop speaker/autostart combination. The current kernel-autoload path is described at the top and remains device-unverified; the six cold boots used the historical scripted loader. Prolonged loud playback may damage the unprotected speakers; gain limits do not replace a protection algorithm.
+Sections naming packages `20261102-11` through `-18` describe those historical stages only. Their “speakers remain U”, capture-only and opt-in startup statements do not describe the later S16LE desktop speaker/autostart combination. The current kernel-autoload path and its device results (H + R, 2026-11-17) are described at the top; the 2026-11-08 six cold boots used the historical scripted loader. Prolonged loud playback may damage the unprotected speakers; gain limits do not replace a protection algorithm.
 
-`-11` 至 `-18` 描述历史阶段；当前内核自动加载方案见页首，实机尚未验证。旧方案六次冷启动证据不能沿用，长期可靠性未知。高音量长时间播放可能损伤无保护算法的喇叭，限增益不等于保护。
+`-11` 至 `-18` 描述历史阶段；当前内核自动加载方案及其实机结果见页首；旧方案六次冷启动属于旧加载方式，长期可靠性未知。高音量长时间播放可能损伤无保护算法的喇叭，限增益不等于保护。
 
 ## Disable or restore kernel autoload / 关闭与恢复
 
