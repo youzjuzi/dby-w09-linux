@@ -258,8 +258,15 @@ sudo systemctl mask dby-w09-audio-config.service dby-w09-audio-ucm.service
 
 To prevent automatic onboard-audio loading on the next boot, also create
 `/etc/modprobe.d/90-dby-audio-disabled.conf` with the following complete contents.
-This intentionally restores the former broad blacklist, including shared
-support modules; USB audio core modules remain available through dependencies.
+This retains the loadable entries from the former broad blacklist, including
+shared support modules; USB audio core modules remain available through dependencies.
+The current kernel builds in QRTR, qrtr-smd, pd-mapper, QMI helpers and PDR message
+definitions. Blacklisting those built-in components has no effect, so the old
+`qrtr_smd`, `qcom_pd_mapper` and `qcom_pdr_msg` entries are omitted below. These
+shared components remain initialized, including QRTR/QMI support for Wi-Fi.
+The ADSP driver `qcom_q6v5_pas` remains a module: its blacklist entry prevents
+automatic ADSP startup. Safe mode still only skips the audio configuration
+services; it does not disable ADSP or the built-in infrastructure.
 Blacklists control alias loading and do not prohibit an explicit manual
 modprobe. Do not run the old loader or manually load audio modules while disabled.
 
@@ -278,8 +285,6 @@ blacklist q6core
 blacklist q6routing
 blacklist qcom_common
 blacklist qcom_glink_smem
-blacklist qcom_pd_mapper
-blacklist qcom_pdr_msg
 blacklist qcom_pil_info
 blacklist qcom_q6v5
 blacklist qcom_q6v5_pas
@@ -306,7 +311,6 @@ blacklist snd_soc_wcd_mbhc
 blacklist soc_usb
 blacklist soundwire_bus
 blacklist soundwire_qcom
-blacklist qrtr_smd
 blacklist dby_tfa9874
 ```
 
