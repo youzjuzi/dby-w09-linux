@@ -1,6 +1,6 @@
 # Onboard audio startup and validation
 
-当前方案：内核按设备树 modalias 与延迟探测自动加载板载音频。包 `20261116-13` 在一台平板 6 次冷启动、2 次热重启全部通过：无需手动操作，登录后即有桌面喇叭与四路麦克风；`devices_deferred` 每次为空，无 `AFE failed to vote`；ADSP 上线 6.8–10.1 s，Mic 初始化完成 8.2–11.5 s（随开机快慢变化）；播放 `S16_LE`，用户确认音乐与录音正常（H + R，2026-11-17）。UCM2、WirePlumber 的 S16LE 规则、Mic 初始化参数和喇叭硬件档均不变。无喇叭保护算法，长期可靠性和物理麦克风映射仍 U。
+当前方案：内核按设备树 modalias 与延迟探测自动加载板载音频。包 `20261116-13` 在一台平板 6 次冷启动、2 次热重启全部通过：无需手动操作，登录后即有桌面喇叭与四路麦克风；`devices_deferred` 每次为空，无 `AFE failed to vote`；ADSP 上线 6.8–10.1 s，Mic 初始化完成 8.2–11.5 s（随开机快慢变化）；播放 `S16_LE`，用户确认音乐与录音正常（H + R，2026-11-17）。包 `20261116-14`(CPU 调频提前)在 2 次开机中有 1 次 ADSP 未公布任何服务、声卡未出现;此后 QRTR、qrtr-smd、pd-mapper 改为内建(包 `20261116-15`),5 次冷启动、3 次热重启全部正常,声卡均早于桌面会话就绪(H + R,2026-11-17;失败机制 U)。UCM2、WirePlumber 的 S16LE 规则、Mic 初始化参数和喇叭硬件档均不变。无喇叭保护算法，长期可靠性和物理麦克风映射仍 U。
 
 The 44-entry onboard-audio blacklist and the two-stage `dby-audio-start` loader
 are removed. The blacklist was a conservative bring-up fallback; no device
