@@ -33,7 +33,6 @@ kernel/drivers/i2c/busses/i2c-qcom-geni.ko
 kernel/drivers/media/cec/core/cec.ko
 kernel/drivers/power/reset/qcom-pon.ko
 kernel/drivers/hid/uhid.ko
-kernel/drivers/interconnect/qcom/icc-osm-l3.ko
 kernel/drivers/bluetooth/hci_uart.ko
 kernel/drivers/bluetooth/btbcm.ko
 kernel/drivers/bluetooth/btqca.ko
