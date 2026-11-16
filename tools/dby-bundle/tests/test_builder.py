@@ -74,7 +74,7 @@ class BuilderTests(unittest.TestCase):
             "options nt36523_thp managed=1 settle_ms=100 skip_probe=1 edge_px=50 "
             "filter=1 lock_px=12 confirm=1 multi=1 guard=0"])
         self.assertIn("pci-pwrctrl-pwrseq.ko", (tree / "modules/7.2.10/modules.dep").read_text())
-        self.assertTrue((tree / "etc/systemd/system/multi-user.target.wants/dby-w09-usb-gadget.service").is_symlink())
+        self.assertTrue((tree / "etc/systemd/system/usb-gadget.target.wants/dby-w09-usb-gadget.service").is_symlink())
         self.assertEqual(stat.S_IMODE((tree / "bin/dby-w09-rtc-offset").stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE((tree / FIRMWARE).stat().st_mode), 0o644)
         self.assertEqual((tree / "DEVICE-CONTENTS.txt").read_bytes(), B.contents(tree))

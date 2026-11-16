@@ -1,4 +1,4 @@
-systemd/system/multi-user.target.wants/dby-w09-usb-gadget.service
+systemd/system/usb-gadget.target.wants/dby-w09-usb-gadget.service
 systemd/system/multi-user.target.wants/dby-w09-rtc-boot.service
 systemd/system/timers.target.wants/dby-w09-rtc-save.timer
 systemd/system/multi-user.target.wants/dby-w09-display-watchdog.service

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 [Unit]
-Description=DBY-W09 USB2 NCM network gadget
+Description=DBY-W09 NCM network gadget
 Requires=sys-kernel-config.mount
 After=sys-kernel-config.mount
 Before=network-pre.target
@@ -12,4 +12,4 @@ ExecStart=/run/dby-device/bin/dby-w09-usb-gadget
 RemainAfterExit=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=usb-gadget.target
