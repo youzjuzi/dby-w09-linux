@@ -143,7 +143,7 @@ if os.environ.get('BAD_UPTIME'):
         root = SCRIPT.parents[2]
         modules = (root/'modules.list').read_text().splitlines()
         entries = [m for m in modules if m and not m.startswith('#')]
-        self.assertEqual(len(entries), 117)
+        self.assertEqual(len(entries), 123)
         self.assertIn('kernel/sound/soc/codecs/dby-tfa9874.ko', entries)
         self.assertIn('blacklist dby_tfa9874',
                       (root/'device-rootfs/etc/modprobe.d/10-dby-audio.conf').read_text())

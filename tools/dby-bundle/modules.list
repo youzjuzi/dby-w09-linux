@@ -51,6 +51,10 @@ kernel/drivers/input/touchscreen/nt36523-thp.ko
 kernel/fs/exfat/exfat.ko
 kernel/drivers/regulator/qcom_usb_vbus-regulator.ko
 kernel/drivers/usb/typec/typec.ko
+# USB1 SuperSpeed: aux-bridge precedes the QMP combo PHY and redriver.
+kernel/drivers/gpu/drm/bridge/aux-bridge.ko
+kernel/drivers/phy/qualcomm/phy-qcom-qmp-combo.ko
+kernel/drivers/usb/typec/mux/nb7vpq904m.ko
 kernel/drivers/usb/typec/tcpm/tcpm.ko
 kernel/drivers/gpu/drm/bridge/aux-hpd-bridge.ko
 kernel/drivers/usb/typec/tcpm/qcom/qcom_pmic_tcpm.ko
