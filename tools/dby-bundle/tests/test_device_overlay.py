@@ -60,6 +60,19 @@ class DeviceOverlayTests(unittest.TestCase):
             self.assertEqual(result, 0)
             saved.assert_not_called()
 
+    def test_watchdog_is_manual_only_and_retained(self):
+        from dbybundle.build_archive import overlay
+        name = 'systemd/system/multi-user.target.wants/dby-w09-display-watchdog.service'
+        self.assertNotIn(name, (OVERLAY / 'wants-links.txt').read_text().splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            overlay(tree, True)
+            self.assertFalse((tree / 'etc' / name).is_symlink())
+            self.assertFalse((tree / 'etc' / name).exists())
+            self.assertEqual((tree / 'etc/systemd/system/dby-w09-display-watchdog.service').read_bytes(),
+                             (OVERLAY / 'etc/systemd/system/dby-w09-display-watchdog.service').read_bytes())
+            self.assertTrue(os.access(tree / 'bin/dby-w09-display-watchdog', os.X_OK))
+
     def test_watchdog_retries_display_on_without_accessing_devices(self):
         module = helper("dby-w09-display-watchdog")
         answers = [Mock(returncode=0), Mock(returncode=1), Mock(returncode=0)]

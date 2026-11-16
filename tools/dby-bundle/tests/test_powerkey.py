@@ -962,8 +962,8 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), (source / 'etc' / name).read_bytes())
             configs = sorted(p.relative_to(tree / 'etc').as_posix() for p in (tree / 'etc').rglob('*')
                              if p.is_file() or p.is_symlink())
-            # New power-key drop-in: 29 public configs, 30 with the private one.
-            self.assertEqual(len(configs), 29)
+            # Display watchdog autostart removed: 28 public configs, 29 with private input.
+            self.assertEqual(len(configs), 28)
             self.assertIn('systemd/logind.conf.d/20-dby-w09-powerkey.conf', configs)
             self.assertIn('modprobe.d/11-dby-venus.conf', configs)
             self.assertFalse(any(name.startswith('bin/') for name in configs))

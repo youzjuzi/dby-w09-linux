@@ -205,3 +205,11 @@ Safe-mode truth comes from the initramfs runtime file. The applier logs missing
 runtime support and never creates a blocking policy. Only known, self-marked old
 persistent safe-mode files are cleaned when the requested value is false; manual
 display fallback files remain untouched. The recorded 2026-11-02 device checks (H) cover keys, Wi-Fi, regulatory request, mirror restoration, timezone, refresh-rate delay and display safe mode; see [status](../../docs/status.md). Extra packages still miss Wi-Fi readiness at boot and required a service restart after connection. Temporary-root tests are O and do not establish compatibility with other inputs or replace the separate touch device check.
+
+
+The candidate panel driver detects dual alarm GPIOs with IRQs and resets the DRM
+pipeline (O, hardware Pending). The display watchdog script/unit remain packaged
+as a manual fallback; its boot wants link is removed. Never run it alongside
+`esd_recovery=1`. See [display recovery instructions](../../docs/power-key.md#display-recovery-candidate-o)
+for parameter order and the existing read-only `/dev/mem` fallback needed while
+the kernel owns the GPIOs.

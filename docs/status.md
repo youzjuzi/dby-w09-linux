@@ -127,7 +127,7 @@ Touch and display share the NT36523 controller. Use only the matching owner firm
 
 ## Known issues / 已知问题
 
-- **Intermittent black screen remains unresolved.** It existed in the earlier system; a single clean new session does not establish a fix. The display watchdog remains a userspace workaround. / **偶发黑屏未解决**；新系统单次会话正常不足以判定修复，看门狗仍是用户空间临时做法。
+- **Intermittent black screen remains unresolved.** The candidate kernel panel driver uses alarm GPIO IRQs and DRM pipeline reset; the Python watchdog is retained for manual fallback with autostart disabled (O, hardware Pending). See [recovery instructions](power-key.md#display-recovery-candidate-o). / **偶发黑屏未解决**；候选内核面板驱动改用报警脚中断检测并复位管线，旧脚本保留作手动备用、不再开机启动；中断恢复尚待实机验证。
 - **First GNOME setup can hang.** The recorded initial session had a dconf worker using a full CPU thread. Marking initial setup done and restarting GDM restored the next session (H + R); the cause is unknown. / **首次向导可能卡住**，记录中 dconf worker 忙转；标记向导完成并重启 GDM 后恢复，根因未知。
 - **Extra-package seed timing:** the asynchronous service does not wait for Wi-Fi; network-arrival retry is pending. / **额外包联网时序**：异步服务不等待 Wi-Fi，网络到来触发重试未实现。
 - **Known device warnings:** DSI PLL lock/unprepared warnings, Bluetooth wake-ack messages and reserved-memory overlap were recorded. No absence-of-warning or hardware-safety certification is claimed. / **日志警告**：记录过 DSI PLL、蓝牙 wake-ack 与保留内存重叠，不宣称零警告或硬件安全认证。
