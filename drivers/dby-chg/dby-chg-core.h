@@ -70,6 +70,30 @@ static inline int dby_batt_therm_decic(int uv, int ref_uv, int *decic)
 	*decic = (int)dby_therm_div(centic + (centic >= 0 ? 5 : -5), 10);
 	return 0;
 }
+/* Rounded mean of two owner-observed plug/unplug steps (12.2/13.6 mOhm)
+ * on one tablet; this removes current bias, not board-temperature coupling. */
+#define DBY_THERM_IR_MOHM 13
+static inline int dby_batt_therm_ir_decic(int uv, int ref_uv, int current_ua,
+				       int *decic, int *ir_uv)
+{
+	dby_therm_s64 correction, compensated;
+	int ret;
+
+	if (!decic || !ir_uv || ref_uv <= 0 || ref_uv > 10000000)
+		return -EINVAL;
+	if (current_ua > 6000000)
+		current_ua = 6000000;
+	else if (current_ua < -6000000)
+		current_ua = -6000000;
+	correction = dby_therm_div((dby_therm_s64)current_ua * DBY_THERM_IR_MOHM, 1000);
+	compensated = (dby_therm_s64)uv - correction;
+	if (compensated <= 0 || compensated >= ref_uv)
+		return -ERANGE;
+	ret = dby_batt_therm_decic((int)compensated, ref_uv, decic);
+	if (!ret)
+		*ir_uv = (int)correction;
+	return ret;
+}
 /* All policy thresholds are provisional (U), not battery specifications. */
 #define DBY_CHG_FLOAT_REG 0x1070u
 #define DBY_CHG_FLOAT_VALUE 0x50u
@@ -133,9 +157,10 @@ struct dby_chg_thermal {
  unsigned long long changed_ms;
 };
 /* Offline resets the ceiling. Parameter raises never erase a thermal cap.
- * Invalid temperature samples fail safe; only cool samples permit a rise. */
+ * Invalid temperature samples fail safe; only cool samples permit a rise.
+ * A USB edge skips temperature-based steps, not reset/clamping/error fallback. */
 static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
- int max_ma, int online, int batt_error, int batt_decic,
+ int max_ma, int online, int skip_temp, int batt_error, int batt_decic,
  int chip_error, int chip_mc, unsigned long long now)
 {
  int old, direction = 0;
@@ -152,6 +177,8 @@ static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
  old = t->cap_ma;
  if (batt_error || chip_error) {
   t->cap_ma = DBY_CHG_PD9V_FLOOR_MA;
+ } else if (skip_temp) {
+  return 0;
  } else if (batt_decic >= 380 || chip_mc >= 80000) {
   t->cap_ma -= DBY_CHG_THERMAL_STEP_MA;
   if (t->cap_ma < DBY_CHG_PD9V_FLOOR_MA)
@@ -226,6 +253,7 @@ struct dby_chg_sample {
  int error[CHG_NREG];
  int identity_error, temp_error, voltage_error, current_error, capacity_error;
  int temp_decic, therm_uv, voltage_uv, current_ua, capacity;
+ int temp_raw_decic, therm_ir_uv;
 };
 struct dby_chg_state {
  unsigned int full, offline_seen, qualifying;

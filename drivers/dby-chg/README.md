@@ -145,6 +145,64 @@ Model and policy limits are provisional (U), with only a room-temperature
 comparison; numeric bounds -100..150°C are not charging limits. No comprehensive
 open/short validation or multi-temperature calibration is claimed.
 
+## Battery thermistor current-drop compensation
+
+The 2026-11-16 task book supplies the following plug/unplug observations (H)
+from one idle tablet, sampled every 1.2 seconds. These are input evidence for
+this offline candidate, not device validation of the compensation:
+
+| Edge | Battery current | Thermistor voltage | Uncompensated reading |
+|---|---|---|---|
+| Plug Lenovo PD source | -0.86 to +3.75 A | 397253 to 453633 uV | 30.7 to 26.1 C |
+| Unplug | +3.44 to -1.08 A | 395242 to 333801 uV | 30.8 to 36.6 C |
+
+Each step completed within one sample. The voltage/current changes imply
+12.2 and 13.6 mOhm; their rounded mean, **13 mOhm**, is a two-step estimate
+for this tablet. Positive charging current raises the sensed voltage and
+makes the uncorrected NTC reading colder; discharging reverses the bias.
+The task also reports that the stock fuel-gauge node selects the same `0x2a`
+BAT_THERM_30K_PU channel, ratiometric mode and 200 us settling, with
+`qcom,fg-temp-ir-for-current` and `qcom,five-pin-battery`. Interpreting the
+stock current/temperature pairs as mA and 0.1 C would imply +5.0 C at 3.5 A,
+consistent in scale with these steps; those property semantics remain
+unverified. No stock correction table is used by this implementation.
+
+Before the unchanged beta conversion, the pure helper calculates
+`uv_comp = therm_uv - clamp(current_ua, -6000000, 6000000) * 13 / 1000`.
+The signed microvolt correction uses 64-bit arithmetic and integer division
+truncated toward zero. A compensated voltage outside the open interval
+`(0, ref_uv)` or an invalid model result is a temperature error. The existing
+raw ADC/model validation remains; missing battery current follows the same
+existing temperature-error path. Both the charging stop/resume gates and the
+38/36 C PD thermal policy use the compensated `temp_decic`; their numeric
+thresholds and hysteresis are unchanged. Charger `chg_temp` is not corrected.
+
+An evaluation whose USB online state differs from the previous evaluation
+skips temperature-based thermal drops/rises, because FG current can still
+represent the preceding state. Offline ceiling reset, parameter clamping and
+read-error fallback remain active. The first evaluation has no previous state
+and applies normal thermal checks. The existing two-second IRQ settle sample
+checks temperatures normally when the state is unchanged. The charging
+enable/stop policy still runs at every evaluation; no new timer, register
+access or desktop temperature property is added.
+
+Logs and read-only debugfs retain `temp_decic` as the compensated result and
+add `temp_raw_decic` and `therm_ir_uv` (the signed voltage subtracted). Thermal
+drop lines include all three. Consult `temp_error`: on failed compensation,
+compensated temperature/correction remain zero placeholders; the raw value is
+available only when raw ADC/model conversion succeeded. Instantaneous edge
+readings can still combine a new ADC value with old FG current; this candidate
+has not demonstrated the requested <=1 C compensated edge jump on hardware.
+
+Current-drop compensation does **not** establish true cell temperature.
+The task reports a further slow 4.7 C rise over 2.8 minutes while charging;
+after unplug, at similar discharge current, the reading fell from 36.6 to
+33.4 C after 45 seconds, 32.0 C after two minutes and 31.2 C after nine minutes
+(30.7 C before charging). PM8150B die temperature also fell from 58 to 36 C
+in 15 seconds and then to 32 C. This suggests fast thermal coupling to board
+heat (interpretation U); that effect is not corrected here. The 13 mOhm
+estimate, thermistor model and board/cell relationship need device validation.
+
 ## FULL and exit
 
 FULL requires enabled 1042=01, voltage >=4.38 V and 0 <= current <200 mA for

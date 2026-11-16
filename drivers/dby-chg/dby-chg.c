@@ -180,10 +180,16 @@ static void chg_sample(struct dby_chg *chg, struct dby_chg_sample *s)
 	 * Do not multiply by 1000 as for generic IIO millivolt providers. */
 	s->temp_error = iio_read_channel_processed(chg->therm, &s->therm_uv);
 	if (!s->temp_error)
-		s->temp_error = dby_batt_therm_decic(s->therm_uv, DBY_CHG_REF_UV, &s->temp_decic);
+		s->temp_error = dby_batt_therm_decic(s->therm_uv, DBY_CHG_REF_UV,
+						  &s->temp_raw_decic);
+	if (!s->temp_error)
+		s->temp_error = s->current_error ?:
+			dby_batt_therm_ir_decic(s->therm_uv, DBY_CHG_REF_UV,
+				s->current_ua, &s->temp_decic, &s->therm_ir_uv);
 }
 /* Update before enable policy; apply the resulting ICL in this evaluation. */
-static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s)
+static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s,
+			       bool online_changed)
 {
 	int old = s->thermal.cap_ma;
 	int direction;
@@ -192,11 +198,13 @@ static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s)
 	s->chg_temp_mc = 0;
 	s->chg_temp_error = iio_read_channel_processed(chg->chg_temp, &s->chg_temp_mc);
 	direction = dby_chg_thermal_update(&s->thermal, s->pd9v_max_ma,
-		dby_chg_online(&s->sample), s->sample.temp_error, s->sample.temp_decic,
+		dby_chg_online(&s->sample), online_changed,
+		s->sample.temp_error, s->sample.temp_decic,
 		s->chg_temp_error, s->chg_temp_mc, chg_now(chg));
 	if (direction < 0)
-		dev_info(chg->dev, "PD thermal drop: thermal_cap_ma=%d previous_ma=%d pd9v_max_ma=%d temp_decic=%d chg_temp_mc=%d batt_temp_error=%d chg_temp_error=%d drops=%u\n",
+		dev_info(chg->dev, "PD thermal drop: thermal_cap_ma=%d previous_ma=%d pd9v_max_ma=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d chg_temp_mc=%d batt_temp_error=%d chg_temp_error=%d drops=%u\n",
 			 s->thermal.cap_ma, old, s->pd9v_max_ma, s->sample.temp_decic,
+			 s->sample.temp_raw_decic, s->sample.therm_ir_uv,
 			 s->chg_temp_mc, s->sample.temp_error, s->chg_temp_error, s->thermal.drops);
 }
 static struct dby_chg_snapshot chg_snapshot(struct dby_chg *chg)
@@ -611,7 +619,10 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 	chg_sample(chg, &s.sample);
 	s.pd_low_batt = dby_chg_low_batt(s.pd_low_batt,
 		s.sample.voltage_error, s.sample.voltage_uv);
-	chg_thermal_sample(chg, &s);
+	/* Compare evaluations, not ICL write success: FG current may lag an edge.
+	 * The existing IRQ settle sample evaluates temperatures normally again. */
+	chg_thermal_sample(chg, &s, old.evaluated &&
+		dby_chg_online(&old.sample) != dby_chg_online(&s.sample));
 	now = chg_now(chg);
 	mutex_lock(&chg_limits_lock);
 	low = temp_min_decic;
@@ -672,9 +683,10 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		old.pd_low_batt != s.pd_low_batt;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u pd_low_batt=%u\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u pd_low_batt=%u\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
+			 s.sample.temp_raw_decic, s.sample.therm_ir_uv,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
 			s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.stopped,
 			s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
@@ -846,8 +858,9 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
 		DBY_CHG_TOGGLE_LIMIT - s.control.count,
 		s.control.last_toggle_ms, s.control.stopped, s.control.owned_off);
-	seq_printf(seq, "identity_error=%d therm_uv=%d temp_decic=%d temp_error=%d voltage_uv=%d voltage_error=%d current_ua=%d current_error=%d capacity=%d capacity_error=%d\n",
-		s.sample.identity_error, s.sample.therm_uv, s.sample.temp_decic, s.sample.temp_error,
+	seq_printf(seq, "identity_error=%d therm_uv=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d temp_error=%d voltage_uv=%d voltage_error=%d current_ua=%d current_error=%d capacity=%d capacity_error=%d\n",
+		s.sample.identity_error, s.sample.therm_uv, s.sample.temp_decic,
+		s.sample.temp_raw_decic, s.sample.therm_ir_uv, s.sample.temp_error,
 		s.sample.voltage_uv, s.sample.voltage_error, s.sample.current_ua,
 		s.sample.current_error, s.sample.capacity, s.sample.capacity_error);
 	for (i = 0; i < CHG_NREG; i++)
