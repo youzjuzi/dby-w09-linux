@@ -1,0 +1,40 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# Module ordering belongs to kernel deferred probe. The original blacklist
+# was a conservative bring-up fallback, not a demonstrated autoload failure.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+RUN=/run
+PROC=/proc
+UCM_DST=/usr/share/alsa/ucm2/conf.d/sm8250
+umask 077
+[[ $# == 0 && $(id -u) == 0 ]] || { echo 'Run as root without arguments'; exit 1; }
+exec > >(tee -a "$RUN/dby-audio-start.log") 2>&1
+fail() { echo "ERROR: $*; reboot before another attempt"; exit 1; }
+# Mount configuration before display-manager starts; no ALSA or module work.
+UCM_SRC=$RUN/dby-device/ucm2/conf.d/sm8250
+WP_SRC=$RUN/dby-device/wireplumber/wireplumber.conf.d
+WP_DST=/etc/wireplumber/wireplumber.conf.d
+if [[ -f "$UCM_SRC/DBY-W09.conf" && -d "$UCM_DST" ]]; then
+    if ! grep -Fq " $UCM_DST " "$PROC/mounts" 2>/dev/null; then
+        mount --bind "$UCM_SRC" "$UCM_DST" || fail 'UCM2 bind mount failed'
+        mount -o remount,bind,ro,nosuid,nodev "$UCM_DST" || fail 'UCM2 ro remount failed'
+    fi
+fi
+# The only persistent rootfs change is creating this empty directory tree.
+# Configuration stays in the device image; the read-only bind is runtime-only.
+if [[ -d "$WP_SRC" ]]; then
+    if [[ ! -d "$WP_DST" ]]; then
+        (umask 022; mkdir -p -m 0755 "$WP_DST") || fail 'WirePlumber directory creation failed'
+    fi
+    if ! grep -Fq " $WP_DST " "$PROC/mounts" 2>/dev/null; then
+        if [[ -n $(find "$WP_DST" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+            echo 'WARNING: WirePlumber configuration directory is not empty; speaker S16 rule skipped'
+        else
+            mount --bind "$WP_SRC" "$WP_DST" || fail 'WirePlumber bind mount failed'
+            mount -o remount,bind,ro,nosuid,nodev "$WP_DST" || fail 'WirePlumber ro remount failed'
+        fi
+    fi
+fi
+echo 'DBY-W09 audio configuration mounts ready'

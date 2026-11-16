@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Mount DBY-W09 audio configuration
+After=local-fs.target
+Before=display-manager.service
+ConditionPathExists=!/run/modprobe.d/dby-safe-mode.conf
+
+[Service]
+Type=oneshot
+ExecStart=/run/dby-device/bin/dby-w09-audio-config
+RemainAfterExit=yes
+TimeoutStartSec=10s
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

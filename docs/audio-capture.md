@@ -1,15 +1,45 @@
 # Onboard audio startup and validation
 
-板载音频：包 `20261102-17` 在一台平板连续四次冷启动中三次成功、一次失败，已定位为等待受墙钟步进影响 (H, 2026-11-08)；修复包 `20261102-18` 随后连续六次冷启动全部成功 (H + R, 2026-11-08)，自启长期可靠性 R/U；此前手动启动下四路模拟麦克风同时录音与桌面 UCM2 `Internal Microphone` 集成已在一台设备验证 (H + R, 2026-11-06)；四个喇叭经桌面 `Internal Speakers` 播放已在一台设备验证 (H + R, 2026-11-07，包 `20261102-16`)；物理麦克风映射仍未验证 (U)，没有喇叭保护算法。The existing USB audio and charger paths are retained.
+当前方案：内核按设备树 modalias 与延迟探测自动加载板载音频（O，实机待验证）。UCM2、WirePlumber 的 S16LE 规则、Mic 初始化参数和喇叭硬件档均不变。旧脚本方案的六次冷启动通过只属于旧包，不作为本方案成功证据。无喇叭保护算法，长期可靠性和物理麦克风映射仍 U。
 
-The audio startup introduced in package `20261102-18` and retained in later packages runs at boot through
-`dby-w09-audio.service` (H + R, 2026-11-08; see the validation paragraph below).
-The service runs `/run/dby-device/bin/dby-audio-start` once. Manual invocation is
-for diagnosis only, from a boot where startup has not already been attempted.
-All 43 onboard audio blacklist entries remain unchanged: the script explicitly
-loads modules in the established order; shared USB sound modules remain available.
+The 44-entry onboard-audio blacklist and the two-stage `dby-audio-start` loader
+are removed. The blacklist was a conservative bring-up fallback; no device
+failure of autoload had been established. APR creates protected audio-service
+devices after PDR reports the audio domain up. AFE then creates its clock
+controller, and LPASS consumers defer while their providers are absent. All
+44 modules have a device alias or symbol-dependency path, including dynamic
+RPMsg/auxiliary devices; no extra modules-load list is needed (O).
 
-The script records `/run/dby-audio-start.log`, permits only one attempt per boot, loads transport/APR modules first, waits at most 15 seconds for all four bound APR services, then loads LPASS/capture modules. Each modprobe has a 15-second timeout plus a 2-second kill grace period. A partial failure requires reboot; there is no online unload procedure. Kernel tasks stuck in uninterruptible hardware waits cannot be guaranteed terminable by a userspace timeout.
+Two oneshots retain the configuration work:
+
+- `dby-w09-audio-config.service` mounts UCM2 and WirePlumber configuration
+  read-only after local filesystems and before `display-manager.service`.
+  It performs no module loading or ALSA initialization. Existing mount and
+  nonempty-directory checks are retained; a nonempty WirePlumber directory
+  is preserved with a warning.
+- `dby-w09-audio-ucm.service` is requested by a `change` event for a sound
+  `card*` whose `id` is `DBYW09`, with `SOUND_INITIALIZED=1` set by
+  `78-sound-card.rules` after child-device processing. Card `add` precedes
+  control/PCM registration and is too early. It requires and follows the config unit,
+  selects `HiFi` and `Mic` in one `alsaucm` session, triggers sound change
+  events, then refreshes already-running desktop WirePlumber sessions.
+  It has no display-manager ordering gate, polling, sleeps or retries.
+
+The UCM step remains because a desktop can open the card before Mic routing
+is initialized. Removing it needs separate validation. Both units skip when
+`/run/modprobe.d/dby-safe-mode.conf` exists; **safe mode does not blacklist
+audio, so it does not prevent ADSP or audio modules from starting**.
+去掉 blacklist 后，安全模式不再阻止音频模块和 ADSP 启动（旧方案会阻止）；本任务不扩大安全模式范围。
+Logs remain in `/run/dby-audio-start.log`, plus
+`journalctl -u dby-w09-audio-config.service -u dby-w09-audio-ucm.service`.
+The UCM attempt marker still permits only one attempt per boot; a failed or
+partial initialization requires reboot. No online module unload is provided.
+
+This loading path is O only. Cold boots, hot reboots, login timing, sound,
+USB-headset switching, and absence of AFE vote errors remain U. In particular,
+an enabled service that pulls in `systemd-udev-settle` can still affect boot
+timing if a driver stalls; asynchronous remoteproc boot is not a universal
+bound on hardware waits.
 
 The firmware is stored at `firmware/qcom/dby-w09/adsp.*` inside the package and exposed through the existing `/run/dby-device/firmware` firmware-class search path. It is not copied into `/lib/firmware`. Scripts in the package's `bin/` are executable at `/run/dby-device/bin/`; the package does not install a new `/usr/local/sbin` file.
 
@@ -75,7 +105,7 @@ microphone-to-channel mapping and speakers remain U.
 
 ## A3a bounded speaker bring-up (O; device validation U)
 
-Stage B now explicitly loads `dby-tfa9874` before the machine driver; the new
+At the historical A3a stage, Stage B explicitly loaded `dby-tfa9874` before the machine driver; the new
 module is blacklisted at boot. The package has 106 modules. UCM2 HiFi remains
 unchanged and exposes only the microphone, so this stage adds no desktop Speaker.
 The kernel-side TDM transport patches and four matching external modules must
@@ -134,7 +164,7 @@ properties. TDM remains S16_LE in 32-bit slots, and no kernel format change or
 software loudness chain is included.
 
 After the UCM2 mount and before desktop WirePlumber restart,
-`dby-audio-start` binds the packaged rule directory read-only at
+`dby-w09-audio-config` binds the packaged rule directory read-only at
 `/etc/wireplumber/wireplumber.conf.d`. If absent, it creates this empty directory
 and any missing parent with mode 0755. **Creating this empty directory tree is
 the only persistent root-filesystem change added by this feature.** Configuration
@@ -145,7 +175,7 @@ A missing packaged rule directory skips this step. An existing mount is reused.
 An existing nonempty directory produces a warning and is left visible: startup
 continues, possibly retaining the quieter speaker format, rather than hiding
 owner configuration. Bind or read-only remount failure stops startup and requires
-reboot. The boot service now invokes this same startup path automatically.
+reboot. The config service retains these checks.
 
 Both UCM speaker enable sequences select step 9. The amplifier control and core
 sequence builder accept only 9..15; driver initialization remains step 15 and
@@ -164,7 +194,7 @@ headset switching worked. After reboot, no audio started and no mount remained
 (only the empty directory); a second explicit startup behaved the same. Long-term
 playback, high-volume endurance and speaker protection remain U.
 
-## Automatic audio startup (`20261102-17`: 3 of 4 boots; `20261102-18`: 6 of 6 boots; long-term reliability R/U)
+## Historical scripted startup (`20261102-17`: 3 of 4 boots; `20261102-18`: 6 of 6 boots; long-term reliability R/U)
 
 `dby-w09-audio.service` is a oneshot wanted by `multi-user.target`, ordered after
 local filesystems, udev and module loading. It has no ordering dependency on GDM
@@ -177,17 +207,9 @@ Failure or timeout requires reboot before another attempt; do not unload modules
 or restart the script in the same boot. Logs: `journalctl -u dby-w09-audio.service`
 and `/run/dby-audio-start.log`.
 
-The service skips startup when `/run/modprobe.d/dby-safe-mode.conf` exists.
-To disable automatic startup on the device, the owner can run:
-
-```sh
-sudo systemctl mask dby-w09-audio.service
-```
-
-Reboot to start with onboard audio stopped. Masking does not unload active audio.
-To restore automatic startup, run `sudo systemctl unmask dby-w09-audio.service`
-and reboot. The persistent `/etc/systemd/system` mask takes precedence over the
-runtime unit in `/run/systemd/system`. No new seed option is added.
+The old service skipped startup in safe mode and supported service masking.
+Those controls applied to the old scripted loader only. Use the current
+instructions below for kernel autoload.
 
 Earlier observations (H + R, one tablet, package `20261102-17`, 2026-11-08): the first
 three of four consecutive cold boots each brought up the sound card, both read-only mounts and
@@ -221,6 +243,78 @@ same boot.
 
 ## Reading the stage history / 历史阶段读法
 
-Sections naming packages `20261102-11` through `-15` describe those historical stages only. Their “speakers remain U”, capture-only and opt-in startup statements do not describe the later S16LE desktop speaker/autostart combination. The current service behavior and six-cold-boot limit are stated at the top; long-term reliability remains unknown. Prolonged loud playback may damage the unprotected speakers; gain limits do not replace a protection algorithm.
+Sections naming packages `20261102-11` through `-18` describe those historical stages only. Their “speakers remain U”, capture-only and opt-in startup statements do not describe the later S16LE desktop speaker/autostart combination. The current kernel-autoload path is described at the top and remains device-unverified; the six cold boots used the historical scripted loader. Prolonged loud playback may damage the unprotected speakers; gain limits do not replace a protection algorithm.
 
-`-11` 至 `-15` 的仅录音、手动启动和“喇叭 U”仅描述历史阶段；当前 S16LE 桌面喇叭与自启边界见页首，仅六次冷启动，长期可靠性未知。高音量长时间播放可能损伤无保护算法的喇叭，限增益不等于保护。
+`-11` 至 `-18` 描述历史阶段；当前内核自动加载方案见页首，实机尚未验证。旧方案六次冷启动证据不能沿用，长期可靠性未知。高音量长时间播放可能损伤无保护算法的喇叭，限增益不等于保护。
+
+## Disable or restore kernel autoload / 关闭与恢复
+
+To skip only configuration, the owner can run the following on the tablet and
+reboot. This does **not** stop module loading, codec probe or ADSP boot:
+
+```sh
+sudo systemctl mask dby-w09-audio-config.service dby-w09-audio-ucm.service
+```
+
+To prevent automatic onboard-audio loading on the next boot, also create
+`/etc/modprobe.d/90-dby-audio-disabled.conf` with the following complete contents.
+This intentionally restores the former broad blacklist, including shared
+support modules; USB audio core modules remain available through dependencies.
+Blacklists control alias loading and do not prohibit an explicit manual
+modprobe. Do not run the old loader or manually load audio modules while disabled.
+
+```conf
+blacklist apr
+blacklist pdr_interface
+blacklist pinctrl_lpass_lpi
+blacklist pinctrl_sm8250_lpass_lpi
+blacklist q6adm
+blacklist q6afe
+blacklist q6afe_clocks
+blacklist q6afe_dai
+blacklist q6asm
+blacklist q6asm_dai
+blacklist q6core
+blacklist q6routing
+blacklist qcom_common
+blacklist qcom_glink_smem
+blacklist qcom_pd_mapper
+blacklist qcom_pdr_msg
+blacklist qcom_pil_info
+blacklist qcom_q6v5
+blacklist qcom_q6v5_pas
+blacklist qcom_sysmon
+blacklist regmap_sdw
+blacklist slimbus
+blacklist snd_compress
+blacklist snd_pcm_dmaengine
+blacklist snd_q6dsp_common
+blacklist snd_soc_core
+blacklist snd_soc_lpass_macro_common
+blacklist snd_soc_lpass_rx_macro
+blacklist snd_soc_lpass_tx_macro
+blacklist snd_soc_lpass_va_macro
+blacklist snd_soc_qcom_common
+blacklist snd_soc_qcom_offload_utils
+blacklist snd_soc_qcom_sdw
+blacklist snd_soc_sm8250
+blacklist snd_soc_wcd938x
+blacklist snd_soc_wcd938x_sdw
+blacklist snd_soc_wcd_classh
+blacklist snd_soc_wcd_common
+blacklist snd_soc_wcd_mbhc
+blacklist soc_usb
+blacklist soundwire_bus
+blacklist soundwire_qcom
+blacklist qrtr_smd
+blacklist dby_tfa9874
+```
+
+Reboot; masking or creating this file does not unload currently active modules.
+To restore, remove only this owner-created file, run
+`sudo systemctl unmask dby-w09-audio-config.service dby-w09-audio-ucm.service`,
+and reboot. The persistent `/etc/systemd/system` masks override runtime units.
+Do not use the former `dby-w09-audio.service` mask for the new package: that unit
+has been removed. These current disable/restore instructions are O, device U.
+If the candidate fails, restore the prior validated device package from the
+host with the tablet shut down; no device action is performed by the agent.

@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# Module ordering belongs to kernel deferred probe. The original blacklist
+# was a conservative bring-up fallback, not a demonstrated autoload failure.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+RUN=/run
+PROC=/proc
+UCM_DST=/usr/share/alsa/ucm2/conf.d/sm8250
+umask 077
+[[ $# == 0 && $(id -u) == 0 ]] || { echo 'Run as root without arguments'; exit 1; }
+exec > >(tee -a "$RUN/dby-audio-start.log") 2>&1
+fail() { echo "ERROR: $*; reboot before another attempt"; exit 1; }
+# Triggered by the DBYW09 card add event, after configuration mounts.
+# Keep the existing initialization and desktop refresh: WirePlumber can open
+# the card before Mic routes are initialized. Removing this needs a new task.
+exec 9> "$RUN/dby-audio-start.lock"
+flock -n 9 || { echo 'Audio initialization already active'; exit 1; }
+[[ ! -e "$RUN/dby-audio-attempted" ]] || fail 'Audio already attempted this boot'
+: > "$RUN/dby-audio-attempted"
+trap 'echo "Initialization interrupted; reboot required"; exit 1' HUP INT TERM
+if [[ -f "$UCM_DST/DBY-W09.conf" ]] && command -v alsaucm >/dev/null 2>&1; then
+    # Verb and device state belong to one UCM manager session.
+    alsaucm -c hw:DBYW09 set _verb HiFi set _enadev Mic || fail 'UCM2 Mic initialization failed'
+fi
+if [[ -f "$UCM_DST/DBY-W09.conf" ]] && command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --action=change --subsystem-match=sound || true
+fi
+if [[ -f "$UCM_DST/DBY-W09.conf" ]] && command -v su >/dev/null 2>&1; then
+    for rdir in "$RUN"/user/*; do
+        [[ -e "$rdir/pipewire-0" ]] || continue
+        uid=${rdir##*/}
+        [[ $uid =~ ^[0-9]+$ ]] || continue
+        user=$(id -nu "$uid" 2>/dev/null) || continue
+        su - "$user" -c "XDG_RUNTIME_DIR=$rdir systemctl --user restart wireplumber" >/dev/null 2>&1 || true
+    done
+fi
+: > "$RUN/dby-audio-ready"
+echo 'DBY-W09 onboard audio card ready for capture and playback. Reboot to clean up.'
+echo 'Codec probe initializes headset detection infrastructure; physical 3.5 mm interface unverified.'

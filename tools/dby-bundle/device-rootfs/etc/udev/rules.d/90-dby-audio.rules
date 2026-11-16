@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Modules use kernel modalias/deferred probe; only the retained UCM setup is a service.
+# Card add precedes control/PCM registration. 78-sound-card.rules forwards a
+# card change after the controlC add and child-device processing, setting
+# SOUND_INITIALIZED=1. Wait for that event before opening the ALSA control device.
+ACTION=="change", SUBSYSTEM=="sound", KERNEL=="card*", ENV{SOUND_INITIALIZED}=="1", ATTR{id}=="DBYW09", TAG+="systemd", ENV{SYSTEMD_WANTS}+="dby-w09-audio-ucm.service"

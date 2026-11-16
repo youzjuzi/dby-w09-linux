@@ -1,5 +1,5 @@
 systemd/system/usb-gadget.target.wants/dby-w09-usb-gadget.service
 systemd/system/multi-user.target.wants/dby-w09-rtc-boot.service
 systemd/system/timers.target.wants/dby-w09-rtc-save.timer
-systemd/system/multi-user.target.wants/dby-w09-audio.service
+systemd/system/multi-user.target.wants/dby-w09-audio-config.service
 systemd/user/default.target.wants/dby-w09-powerkey.service
