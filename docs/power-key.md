@@ -335,13 +335,18 @@ s2idle has not been validated. A successful stop restores the saved GNOME lid ac
 s2idle 未验证。正常停止会还原保存的 GNOME 合盖动作，通常为默认 `suspend`，不会继续强制 `nothing`。即使 logind 包内 drop-in 仍在，还原后合盖也可能请求未验证的休眠；停用后先核对实际保存／还原值，再合盖。还原失败仍按上文 U 边界处理。
 
 
-## Display recovery candidate (O)
+## Display recovery / 黑屏自动恢复
 
 The matching kernel panel driver uses TLMM 135/136 alarm IRQs. Both flags must
 remain high through a 1000 ms debounce while the panel/CRTC is active, then the
-standard DRM helper resets the display pipeline. The candidate has not been
-validated on a device; the earlier 5–6 s observations above concern the old
-userspace watchdog. Its unit and script remain in the image, but its boot wants
+standard DRM helper resets the display pipeline. Device results (one tablet,
+bundles `20261116-11`/`-12`, 2026-11-16, H + R): about 450 alarm edges from normal
+and rapid screen off/on caused no false reset; four real both-high events each
+reset successfully in one attempt. Three occurred shortly after a screen wake and
+the picture returned by itself 1.6–1.9 s after the panel was enabled (the old
+userspace watchdog took 5–6 s). **Known limitation:** in one event while the
+screen was on and idle, the screen stayed black after the reset until the user
+touched it (cause not identified, U); a touch or a screen off/on restores it. Its unit and script remain in the image, but its boot wants
 link is removed. Kernel recovery is limited to five attempts per 60 seconds.
 
 For manual fallback, first disable kernel recovery, then start the old service:
@@ -367,7 +372,10 @@ schedule a recovery: subsequent GPIO edges or panel enable trigger checks.
 After hitting the limit, recovery can resume on such an event after the 60 s
 cooldown; there is no periodic retry timer.
 
-候选版本由内核面板驱动通过两路报警脚中断检测黑屏并复位显示管线（O，待实机）。
+内核面板驱动通过两路报警脚中断检测黑屏并复位显示管线。实机（一台平板，包 `20261116-11`/`-12`，2026-11-16，H + R）：
+约 450 次开关屏瞬态零误触发；4 次真实黑屏均一次复位成功，其中 3 次（亮屏后不久）画面在面板点亮后 1.6–1.9 s 自行恢复
+（旧用户态看门狗 5–6 s）。**已知限制**：一次在亮屏静止使用中发生，复位后仍黑，用户触摸屏幕后画面才出现（原因未明，U）；
+触摸或关开屏一次即可恢复。
 旧 Python 脚本与 unit 保留为手动备用、取消开机自启。先把 `esd_recovery` 置 0，
 再启动旧服务；恢复内核方案时先停旧服务再置 1，禁止两者同时恢复。置 0 不释放 GPIO，
 旧服务会使用已有的只读 `/dev/mem` 退路，启动成功与中断共存仍需上机确认。

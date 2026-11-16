@@ -127,7 +127,7 @@ Touch and display share the NT36523 controller. Use only the matching owner firm
 
 ## Known issues / 已知问题
 
-- **Intermittent black screen remains unresolved.** The candidate kernel panel driver uses alarm GPIO IRQs and DRM pipeline reset; the Python watchdog is retained for manual fallback with autostart disabled (O, hardware Pending). See [recovery instructions](power-key.md#display-recovery-candidate-o). / **偶发黑屏未解决**；候选内核面板驱动改用报警脚中断检测并复位管线，旧脚本保留作手动备用、不再开机启动；中断恢复尚待实机验证。
+- **Intermittent black screen remains unresolved.** The kernel panel driver now detects the alarm GPIOs by IRQ and resets the DRM pipeline: four resets succeeded on one tablet, three restoring the picture within about 2 s; one idle-screen case stayed black until touched (H + R, 2026-11-16). The root cause of the black screen is unknown; the Python watchdog remains as a manual fallback with autostart disabled. See [recovery instructions](power-key.md#display-recovery--黑屏自动恢复). / **偶发黑屏根因未解决**；内核面板驱动用报警脚中断检测并复位管线，一台平板上 4 次复位成功、3 次约 2 秒内出图，一次亮屏静止时需触摸才出图（H + R）；旧脚本保留作手动备用、不再开机启动。
 - **First GNOME setup can hang.** The recorded initial session had a dconf worker using a full CPU thread. Marking initial setup done and restarting GDM restored the next session (H + R); the cause is unknown. / **首次向导可能卡住**，记录中 dconf worker 忙转；标记向导完成并重启 GDM 后恢复，根因未知。
 - **Extra-package seed timing:** the asynchronous service does not wait for Wi-Fi; network-arrival retry is pending. / **额外包联网时序**：异步服务不等待 Wi-Fi，网络到来触发重试未实现。
 - **Known device warnings:** DSI PLL lock/unprepared warnings, Bluetooth wake-ack messages and reserved-memory overlap were recorded. No absence-of-warning or hardware-safety certification is claimed. / **日志警告**：记录过 DSI PLL、蓝牙 wake-ack 与保留内存重叠，不宣称零警告或硬件安全认证。
