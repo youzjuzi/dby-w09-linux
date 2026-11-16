@@ -263,13 +263,30 @@ class Settings:
         return self.desktop.set_actions(value)
 
 
+def screen_state(sysroot=Path("/sys/class")):
+    """True = fully on, False = off/transitioning, None = unavailable."""
+    try:
+        connectors = list((sysroot / "drm").glob("card*-DSI-*"))
+        if len(connectors) != 1:
+            return None
+        enabled = (connectors[0] / "enabled").read_text().strip()
+        dpms = (connectors[0] / "dpms").read_text().strip()
+        power = (sysroot / "backlight/rt8555-backlight/bl_power").read_text().strip()
+    except (OSError, UnicodeError):
+        return None
+    if (enabled not in ("enabled", "disabled") or dpms not in ("On", "Standby", "Suspend", "Off")
+            or power not in ("0", "1", "2", "3", "4")):
+        return None
+    return enabled == "enabled" and dpms == "On" and power == "0"
+
+
 class PowerKey:
-    def __init__(self, desktop, clock=time.monotonic, emit=log):
+    def __init__(self, desktop, clock=time.monotonic, emit=log, screen=None):
         self.desktop, self.clock, self.emit = desktop, clock, emit
+        self.screen = screen if screen is not None else screen_state
         self.pressed = None
         self.woke = self.long_fired = self.suppressed = False
-        self.we_blanked = False
-        self.blanked_at = None
+        self.down_lag = "lag=?"
 
     def elapsed_ms(self):
         return max(0, (self.clock() - self.pressed) * 1000)
@@ -280,41 +297,42 @@ class PowerKey:
             self.long_fired = True
             elapsed = self.elapsed_ms()
             status = self.desktop.shutdown_dialog()
-            self.emit(f"long {elapsed:.0f} ms {status}")
+            self.emit(f"long {elapsed:.0f} ms {status} {self.down_lag}")
 
     def timeout(self):
         if self.pressed is None or self.woke or self.suppressed or self.long_fired:
             return None
         return max(0, (LONG_MS - self.elapsed_ms()) / 1000)
 
-    def event(self, kind, code, value):
+    def event(self, kind, code, value, timestamp=None):
         if kind != 1 or code != 116 or value not in (0, 1):
             return
+        now = self.clock()
+        when = now if timestamp is None else timestamp
+        lag = "lag=?" if timestamp is None else f"lag={(now-timestamp)*1000:.0f} ms"
         if value == 1:
             if self.pressed is not None:
                 return
-            self.pressed = self.clock()
-            mode = self.desktop.mode()  # First desktop operation at key-down.
-            # PW1: cached blanking alone is NOT evidence that the screen is off.
-            own_blank = self.we_blanked and mode == 1
-            self.woke = mode == 1 or own_blank
-            self.suppressed = mode not in (0, 1)
+            self.pressed = when
+            self.down_lag = lag
+            state = self.screen()
+            self.woke = state is False
+            self.suppressed = state is None
             self.long_fired = False
-            if mode == 0 or self.woke:
-                self.we_blanked = False
+            if self.suppressed:
+                self.emit("screen state unavailable")
             if self.woke:
                 ok = self.desktop.set_mode(0)
-                self.emit(f"wake {self.elapsed_ms():.0f} ms {'ok' if ok else 'failed'}")
+                self.emit(f"wake {self.elapsed_ms():.0f} ms {'ok' if ok else 'failed'} {lag}")
             return
         if self.pressed is None:
             return
-        elapsed = self.elapsed_ms()
+        # evdev timeval has microsecond precision; avoid float cancellation
+        # turning an exact 800 ms hold into a short press.
+        elapsed = round(max(0, (when - self.pressed) * 1000), 3)
         if not (self.woke or self.long_fired or self.suppressed) and elapsed < LONG_MS:
             ok = self.desktop.set_mode(1)
-            self.we_blanked = ok
-            if ok:
-                self.blanked_at = self.clock()
-            self.emit(f"short {elapsed:.0f} ms {'ok' if ok else 'failed'}")
+            self.emit(f"short {elapsed:.0f} ms {'ok' if ok else 'failed'} {lag}")
         # A delayed release >= LONG_MS never becomes a short tap. The timer,
         # while held, owns the long action; do not open a dialog after release.
         self.pressed = None
@@ -378,12 +396,6 @@ class Lid:
         if initial and value == 0:
             return  # An already-open lid must not undo a user's blank request.
         ok = self.controller.desktop.set_mode(value)
-        if value == 1:
-            self.controller.we_blanked = ok
-            if ok:
-                self.controller.blanked_at = self.controller.clock()
-        elif ok:
-            self.controller.we_blanked = False
         self.emit(f"lid {'closed' if value else 'open'} {'ok' if ok else 'failed'}")
 
     def read(self, fd, stop):
@@ -429,6 +441,13 @@ def event_loop(fd, settings, desktop, stop):
 
 
 def read_events(fd, wake_fd, settings, desktop, stop, lid_fd=None):
+    try:
+        # EVIOCSCLOCKID = _IOW('E', 0xa0, int); changes only this evdev fd's clock.
+        fcntl.ioctl(fd, 0x400445a0, struct.pack("i", time.CLOCK_MONOTONIC))
+        event_clock = True
+    except OSError:
+        log("EVIOCSCLOCKID failed; using processing time")
+        event_clock = False
     controller = PowerKey(desktop, clock=time.monotonic)
     lid = Lid(controller)
     active = False
@@ -439,7 +458,7 @@ def read_events(fd, wake_fd, settings, desktop, stop, lid_fd=None):
         desktop.poll_dialog()
         if not active and time.monotonic() >= retry_at:
             # Ordering alone does not guarantee Mutter readiness.
-            active = desktop.mode() in (0, 1) and settings.take()
+            active = isinstance(desktop.mode(), int) and settings.take()
             retry_at = time.monotonic() + 2
             if active and lid_fd is not None and not stop():
                 try:
@@ -463,7 +482,7 @@ def read_events(fd, wake_fd, settings, desktop, stop, lid_fd=None):
                 raise OSError("input disconnected")
             buffer += data
             while len(buffer) >= EVENT.size:
-                _, _, kind, code, value = EVENT.unpack(buffer[:EVENT.size])
+                seconds, micros, kind, code, value = EVENT.unpack(buffer[:EVENT.size])
                 buffer = buffer[EVENT.size:]
                 if kind == 0 and code == 3:  # SYN_DROPPED: discard incomplete gestures.
                     controller.pressed = None
@@ -472,7 +491,8 @@ def read_events(fd, wake_fd, settings, desktop, stop, lid_fd=None):
                     if kind == 0 and code == 0:
                         dropped = False
                 elif active and not stop():
-                    controller.event(kind, code, value)
+                    timestamp = seconds + micros / 1_000_000 if event_clock else None
+                    controller.event(kind, code, value, timestamp)
         if lid_fd is not None and lid_fd in readable and active and not stop():
             try:
                 lid.read(lid_fd, stop)

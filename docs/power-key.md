@@ -153,41 +153,79 @@ requires no change.
 
 ## Key-down decision table / 按下时判定
 
-`we_blanked` records a successful blank request, with a monotonic timestamp.
-The current property is authoritative; cached history alone cannot distinguish
-a fresh GNOME wake from a screen that was already on.
+The PW2 implementation reads the unique `/sys/class/drm/card*-DSI-*`
+connector's `enabled` and `dpms`, plus
+`/sys/class/backlight/rt8555-backlight/bl_power`, directly at key-down.
+There is no key-down D-Bus property query or blank-history cache.
 
-| PowerSaveMode at key-down | we_blanked | Decision / 判定 |
-|---|---|---|
-| 1 | false | Wake once; suppress hold/release / 只唤醒 |
-| 1 | true | Wake once; clear cached state / 只唤醒并清缓存 |
-| 0 | false | Normal tap/hold / 正常短按或长按 |
-| 0 | true | Normal tap/hold; clear stale cache / 清缓存后正常处理 |
-| unavailable or other value | either | Ignore gesture / 忽略本次按键 |
+| Kernel screen state at key-down | Decision / 判定 |
+|---|---|
+| Off: all three values recognized, but not all `enabled` / `On` / `0` | Immediately request mode 0, including GNOME idle mode 3; ignore hold/release / 立即唤醒，忽略其余按键过程 |
+| On: `enabled` / `On` / `0` | Release before 800 ms requests mode 1; holding to the deadline requests the GNOME dialog / 短按关屏、长按对话框 |
+| Unavailable: missing/ambiguous connector, unreadable or unknown value | Ignore the gesture; log `screen state unavailable` / 忽略并记录日志 |
 
-**Known race (U):** if GNOME already woke the screen before the key-down
-property read returns, mode 0 with `we_blanked=true` is treated as a normal
-press. A short release can blank it again. The prescribed “cache AND still
-mode 1” policy does not eliminate that race; it avoids trusting stale cache
-after wake by other input. This table is covered by offline tests, not a
-claim that the race has been solved on hardware.
+Recognized values are `enabled`/`disabled`, `On`/`Standby`/`Suspend`/`Off`,
+and backlight power 0–4. Mixed transition states count as off. The connector
+card number is discovered, not fixed. Takeover only requires Mutter to answer
+with an integer, so a session starting in idle mode 3 can activate the helper.
 
-In the reviewer's single device observation on 2026-11-08 (n=1), with
-`power-button-action=nothing`, GNOME did not wake the blanked screen after a
-power-key press during a 29-second observation. The race was not seen in the 16
-later tap/wake cycles either (H + R); this does not establish its elimination (U).
+`EVIOCSCLOCKID` selects `CLOCK_MONOTONIC` on the power-key descriptor. The hold
+deadline is the kernel key-down timestamp plus 800 ms; short-press duration is
+release timestamp minus press timestamp. If the ioctl fails, one diagnostic
+is logged and processing-time measurement is used instead. `wake` and `short`
+logs append `lag=N ms` measured when processing the down/release event;
+`long` carries the key-down processing lag. Without kernel timestamps the
+field is `lag=?`. Logs never include subprocess output.
 
-竞态限制（U）：GNOME 抢先唤醒后若读到 0，即使缓存为真也按正常按键处理，
-短按释放可能再次关屏。实现遵循“缓存为真且当前仍为 1”的约束，未宣称消除竞态。
-审查者于 2026-11-08 的一次实机观察（n=1）中，设置为 `nothing` 时关屏后按电源键，
-29 秒内 GNOME 未自行唤醒；该次未出现竞态，之后 16 次短按/唤醒也未见（H + R），但不能据此宣称竞态消除（U）。
+**Known race:** the idle-screen single-press problem was reproduced on
+2026-11-16 (H, bundle `20261116-8`): GNOME woke the screen before the blocking
+`PowerSaveMode` query completed, then the helper read mode 0 and blanked it
+again at release. Direct kernel-state reads and kernel event timestamps
+replace that query (O). **A remaining race is unverified (U):** if the helper
+only processes key-down after GNOME has fully lit the screen, it can still
+read “on.” The lag field helps observe this delay; the change does not claim
+hardware elimination of the race. Input remains non-exclusive so GNOME can
+reset idle time and present the lock screen on input.
+
+PW2 在按下时直接读唯一 DSI 连接器的 enabled/dpms 与 RT8555 的 bl_power，
+三项恰为 enabled/On/0 才算亮；三项可读且值有效但不全满足时（含过渡态）算灭。
+找不到或有多个 DSI、任一文件读取失败或值不认识则忽略本次按键并记录日志。
+不再在按下时调用 D-Bus 查询，也不保留关屏历史缓存；Mutter 能回答整数即可接管，
+包括空闲息屏时的 3。灭屏按下立即请求模式 0，长按和释放均忽略；亮屏才处理短按和长按。
+
+通过 EVIOCSCLOCKID 选择单调时钟，用内核按下时间戳加 800 ms 定截止时间，
+释放与按下时间戳之差判短按。设置时钟失败只记一次诊断，退回处理时取时钟。
+wake/short 日志分别附按下/释放的处理延迟 lag=N ms，long 沿用按下时的延迟；
+时间戳不可用时为 lag=?，不输出子进程内容。
+
+已复现的原因（H，2026-11-16，包 20261116-8）：GNOME 先因输入亮屏，
+守护进程的阻塞属性查询随后读到 0，释放时又关掉。现用内核状态与事件时间戳（O）；
+**仍有未验证限制（U）：若进程处理按下事件时 GNOME 已完成亮屏，仍可能读到亮。**
+lag 日志用于观察调度延迟，不能据离线测试宣称竞态已在实机消除。
+输入不独占，保留 GNOME 重置空闲计时和显示锁屏界面的输入路径。
+
+## Without a desktop / 没有桌面时
+
+The bundle installs `/run/systemd/logind.conf.d/20-dby-w09-powerkey.conf` with
+`HandlePowerKey=ignore` and `HandlePowerKeyLongPress=poweroff`. These apply only
+when no program holds the `handle-power-key` inhibitor. In GNOME,
+`gsd-media-keys` holds that inhibitor and the session helper decides the key
+behavior. Without a holder (for example before the desktop starts), short
+presses do nothing and logind powers off on a long press. The hold duration is
+built into logind and is not configured here; this fallback and its timing
+remain unverified on the device (U).
+
+设备包把新增配置复制到 /run/systemd/logind.conf.d/，短按 ignore、长按 poweroff。
+只在没有程序持有 handle-power-key 抑制锁时生效；GNOME 会话由 gsd-media-keys
+持锁，由会话守护进程决定行为。没有持锁程序时（如桌面尚未启动）短按无动作、
+长按由 logind 关机；时长由 logind 内置决定，不在此配置，兜底效果与时长仍待实机（U）。
 
 ## Validation limits / 验证边界
 
 - Only the named event device is opened read-only. Repeats are ignored. The
   timer fires a long action at most once while held; release cannot also blank.
 - Input overflow cancels an incomplete gesture. Blocking desktop calls can
-  delay processing; a release processed after 800 ms without a timer action
+  delay processing; a release timestamp at least 800 ms after key-down without a timer action
   is discarded instead of opening a dialog after release.
 - `After`/`PartOf=graphical-session.target` express ordering/lifetime, not
   proof of Mutter readiness; the helper probes the bus and defers takeover.
@@ -196,7 +234,7 @@ later tap/wake cycles either (H + R); this does not establish its elimination (U
 - Both start and restore skip root and the `gdm`/`Debian-gdm` greeter accounts because
   `/run/systemd/user` is shared by user managers. Login-screen behavior is
   outside this feature and remains U. No system-wide dconf defaults are changed; the runtime logind lid
-  policy is described below.
+  and power-key policies are described in their sections.
 - Stop/mask and crash restoration, the login screen and long-term reliability
   are U. Existing intermittent black screens remain unresolved; the 50-cycle
   run did not reproduce one, which is not proof of absence.
@@ -218,8 +256,7 @@ GPIO113 (hall0) activates around **45 degrees**, so the screen can turn off
 before the cover is fully closed. GPIO23 (hall2) also detects the pen and is
 not used for lid control; hall1/hall2 remain observation switches. The probe's shared pinctrl and LDO8 power settings are unchanged. The mapping comes from probe observations on one tablet with one magnetic tri-fold cover and one pen (H + R); with that cover the screen blanks as soon as the segment nearest the screen (about one third) comes down. The lid behavior was validated on that tablet (see the validation section above).
 
-A successful lid blank updates the same blank-history state as a short power
-press. **A short power press while the lid remains closed can still wake the
+**A short power press while the lid remains closed can still wake the
 screen.** A repeated closed state does not force it off again. Power-key tap,
 hold and wake decisions otherwise remain unchanged. If the lid input is missing,
 inaccessible, disconnected, or its initial state cannot be read, one diagnostic
@@ -254,7 +291,7 @@ restoration path cannot guarantee the original settings return.
 
 hall0 约半开 **45°** 就触发，因此关屏可能偏早；hall2 同时被笔触发，不能作为
 合盖信号，hall1/hall2 继续保留探测用途。引脚配置和 LDO8 供电策略不变。
-成功合盖关屏计入原 we_blanked 历史；**合盖状态下短按电源键仍可亮屏**，
+**合盖状态下短按电源键仍可亮屏**，
 不会因为盖子持续合上而重复强制关屏。其余电源键判定不变。
 
 设备缺失、权限不足、断开或初始状态读取失败时，记录一次诊断并保留电源键功能；

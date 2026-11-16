@@ -80,29 +80,31 @@ class PolicyTests(unittest.TestCase):
         self.now = 0
         self.bus = FakeDesktop()
         self.logs = []
-        self.key = P.PowerKey(self.bus, clock=lambda: self.now, emit=self.logs.append)
+        self.key = P.PowerKey(self.bus, clock=lambda: self.now, emit=self.logs.append,
+                              screen=lambda: self.bus.current_mode == 0)
 
     def key_event(self, value, at):
         self.now = at
         self.key.event(1, 116, value)
 
-    def test_short_release_only_and_history(self):
+    def test_short_release_only(self):
         self.key_event(1, 0)
-        self.assertEqual(self.bus.calls, [('get',)])
+        self.assertEqual(self.bus.calls, [])
         self.key_event(0, .1)
-        self.assertEqual(self.bus.calls, [('get',), ('set', 1)])
-        self.assertTrue(self.key.we_blanked)
-        self.assertEqual(self.key.blanked_at, .1)
+        self.assertEqual(self.bus.calls, [('set', 1)])
         self.assertIn('100 ms', self.logs[0])
 
     def test_long_fires_at_800_while_held_once(self):
-        self.key_event(1, 0)
+        self.now = .2
+        self.key.event(1, 116, 1, 0)
+        self.assertAlmostEqual(self.key.timeout(), .6)
         self.now = .799
         self.key.tick()
-        self.assertEqual(self.bus.calls, [('get',)])
+        self.assertEqual(self.bus.calls, [])
         self.now = .8
         self.key.tick()
-        self.assertEqual(self.bus.calls, [('get',), ('dialog',)])
+        self.assertEqual(self.bus.calls, [('dialog',)])
+        self.assertEqual(self.logs, ['long 800 ms requested lag=200 ms'])
         self.assertIsNotNone(self.key.pressed)
         self.now = 2
         self.key.tick()
@@ -111,23 +113,53 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'set' for c in self.bus.calls))
 
     def test_every_keydown_decision_table_row(self):
-        for mode in (0, 1, None, -1, 2, 3):
-            for cached in (False, True):
-                with self.subTest(mode=mode, cached=cached):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            connector = root / 'drm/card7-DSI-1'
+            connector.mkdir(parents=True)
+            backlight = root / 'backlight/rt8555-backlight'
+            backlight.mkdir(parents=True)
+            for enabled, dpms, power, state in [
+                ('enabled', 'On', '0', True), ('disabled', 'Off', '4', False),
+                ('enabled', 'Off', '0', False), ('disabled', 'On', '0', False),
+                ('enabled', 'On', '4', False), ('enabled', 'Standby', '1', False),
+                ('enabled', 'Suspend', '2', False), ('enabled', 'On', '3', False),
+                ('unknown', 'On', '0', None), ('enabled', 'unknown', '0', None),
+                ('enabled', 'On', '5', None), ('enabled', 'On', None, None),
+            ]:
+                with self.subTest(enabled=enabled, dpms=dpms, power=power):
+                    (connector / 'enabled').write_text(enabled + '\n')
+                    (connector / 'dpms').write_text(dpms + '\n')
+                    if power is None:
+                        (backlight / 'bl_power').unlink()
+                    else:
+                        (backlight / 'bl_power').write_text(power + '\n')
+                    self.assertIs(P.screen_state(root), state)
                     self.now = 0
-                    bus = FakeDesktop(mode)
-                    key = P.PowerKey(bus, lambda: self.now, lambda _: None)
-                    key.we_blanked = cached
-                    key.blanked_at = -10 if cached else None
-                    key.event(1, 116, 1)
-                    self.assertEqual(key.woke, mode == 1)
-                    if mode == 0:
-                        self.assertFalse(key.we_blanked)
+                    bus = FakeDesktop(3)  # GNOME idle mode must not decide the gesture.
+                    logs = []
+                    key = P.PowerKey(bus, lambda: self.now, logs.append,
+                                     screen=lambda: P.screen_state(root))
+                    key.event(1, 116, 1, 0)
+                    self.assertEqual(key.woke, state is False)
                     self.now = .1
-                    key.event(1, 116, 0)
-                    expected = [('get',)] + ([('set', 0)] if mode == 1 else
-                                             [('set', 1)] if mode == 0 else [])
+                    key.event(1, 116, 0, .1)
+                    expected = ([('set', 0)] if state is False else
+                                [('set', 1)] if state is True else [])
                     self.assertEqual(bus.calls, expected)
+                    if state is None:
+                        self.assertEqual(logs, ['screen state unavailable'])
+                    else:
+                        self.assertIn('lag=0 ms', logs[0])
+            (backlight / 'bl_power').write_text('0\n')
+            (root / 'drm/card8-DSI-1').mkdir()
+            self.assertIsNone(P.screen_state(root))
+            (root / 'drm/card8-DSI-1').rmdir()
+            (connector / 'dpms').unlink()
+            self.assertIsNone(P.screen_state(root))
+            (connector / 'enabled').unlink()
+            connector.rmdir()
+            self.assertIsNone(P.screen_state(root))
 
     def test_wake_hold_and_release_do_not_blank_or_open_dialog(self):
         self.bus.current_mode = 1
@@ -135,7 +167,7 @@ class PolicyTests(unittest.TestCase):
         self.now = 1
         self.key.tick()
         self.key_event(0, 2)
-        self.assertEqual(self.bus.calls, [('get',), ('set', 0)])
+        self.assertEqual(self.bus.calls, [('set', 0)])
 
     def test_repeat_other_keys_and_duplicate_down_ignored(self):
         self.key.event(1, 115, 1)
@@ -147,14 +179,12 @@ class PolicyTests(unittest.TestCase):
         self.key_event(1, .1)
         self.key_event(2, .2)
         self.key_event(0, .3)
-        self.assertEqual(self.bus.calls, [('get',), ('set', 1)])
+        self.assertEqual(self.bus.calls, [('set', 1)])
 
     def test_failed_actions_are_not_repeated_and_state_is_honest(self):
         self.bus.success = False
         self.key_event(1, 0)
         self.key_event(0, .1)
-        self.assertFalse(self.key.we_blanked)
-        self.assertIsNone(self.key.blanked_at)
         self.key_event(1, 0)
         self.now = .8
         self.key.tick(); self.key.tick()
@@ -163,9 +193,18 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(all('failed' in line for line in self.logs))
 
     def test_release_delayed_past_threshold_is_not_a_short_or_late_dialog(self):
-        self.key_event(1, 0)
-        self.key_event(0, 1)
-        self.assertEqual(self.bus.calls, [('get',)])
+        # Both events can be dequeued together, long after the physical press.
+        for release, expected in [(10.125, [('set', 1)]), (10.8, []), (11, [])]:
+            with self.subTest(release=release):
+                self.bus.calls.clear()
+                self.bus.current_mode = 0
+                self.now = 20
+                self.key.event(1, 116, 1, 10)
+                self.assertEqual(self.key.timeout(), 0)
+                self.key.event(1, 116, 0, release)
+                self.key.tick()
+                self.assertEqual(self.bus.calls, expected)
+        self.assertEqual(self.logs, ['short 125 ms ok lag=9875 ms'])
 
     def test_timer_timeout(self):
         self.assertIsNone(self.key.timeout())
@@ -226,7 +265,7 @@ class DialogTests(unittest.TestCase):
         self.popen = Mock(return_value=self.child)
         self.runner = Mock(return_value=Mock(returncode=0, stdout='(<0>,)'))
         self.bus = P.Desktop(self.runner, self.logs.append, self.popen, lambda: self.now)
-        self.key = P.PowerKey(self.bus, lambda: self.now, self.logs.append)
+        self.key = P.PowerKey(self.bus, lambda: self.now, self.logs.append, screen=lambda: True)
 
     def hold(self, start):
         self.now = start
@@ -242,8 +281,8 @@ class DialogTests(unittest.TestCase):
         self.key.event(1, 116, 0)
         self.popen.assert_called_once()
         self.child.wait.assert_not_called()
-        self.assertEqual(self.runner.call_count, 1)  # Only the key-down Get.
-        self.assertEqual(self.logs, ['long 800 ms requested'])
+        self.assertEqual(self.runner.call_count, 0)  # No key-down Get.
+        self.assertEqual(self.logs, ['long 800 ms requested lag=?'])
         self.assertEqual(self.popen.call_args.kwargs, {
             'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL})
 
@@ -251,14 +290,14 @@ class DialogTests(unittest.TestCase):
         self.hold(0)
         self.key.event(1, 116, 0)
         self.hold(2)
-        self.assertEqual(self.logs[-1], 'long 801 ms ignored (dialog pending)')
+        self.assertEqual(self.logs[-1], 'long 801 ms ignored (dialog pending) lag=?')
         self.popen.assert_called_once()
         self.key.event(1, 116, 0)
         self.now = 4
         self.key.event(1, 116, 1)
         self.now = 4.1
         self.key.event(1, 116, 0)
-        self.assertIn('short 100 ms ok', self.logs)
+        self.assertIn('short 100 ms ok lag=?', self.logs)
         self.child.wait.assert_not_called()
 
     def test_nonzero_exit_is_closed_not_failed_and_allows_next_request(self):
@@ -278,11 +317,11 @@ class DialogTests(unittest.TestCase):
         self.popen.side_effect = [OSError('private diagnostic'), self.child]
         self.hold(0)
         self.key.tick()
-        self.assertEqual(self.logs, ['long 801 ms failed'])
+        self.assertEqual(self.logs, ['long 801 ms failed lag=?'])
         self.assertIsNone(self.bus.dialog)
         self.key.event(1, 116, 0)
         self.hold(2)
-        self.assertEqual(self.logs[-1], 'long 801 ms requested')
+        self.assertEqual(self.logs[-1], 'long 801 ms requested lag=?')
         self.assertEqual(self.popen.call_count, 2)
 
     def test_long_fallback_is_nonblocking_and_escalates_only_after_grace(self):
@@ -367,7 +406,7 @@ class DialogTests(unittest.TestCase):
 
 
 class IdleWaitTests(unittest.TestCase):
-    def run_steps(self, bus, steps):
+    def run_steps(self, bus, steps, screen=True, event_clock=True):
         now = [0]
         seen = []
         input_fd = 123456  # Never used by the real select/read APIs.
@@ -378,19 +417,21 @@ class IdleWaitTests(unittest.TestCase):
             seen.append(timeout)
             now[0] = at
             if event is not None:
-                self.data = P.EVENT.pack(0, 0, *event)
+                self.data = P.EVENT.pack(int(at), round((at % 1) * 1_000_000), *event)
                 return [input_fd], [], []
             return [], [], []
         with patch.object(P.time, 'monotonic', side_effect=lambda: now[0]), \
                 patch.object(P.select, 'select', side_effect=select_step), \
                 patch.object(P.os, 'read', side_effect=lambda fd, size: self.data), \
-                patch.object(P, 'log'):
+                patch.object(P, 'log'), patch.object(P, 'screen_state', return_value=screen), \
+                patch.object(P.fcntl, 'ioctl', side_effect=None if event_clock else OSError) as ioctl:
             P.event_loop(input_fd, Mock(take=Mock(return_value=True)), bus,
                          lambda: len(seen) == len(steps))
+            ioctl.assert_called_once_with(input_fd, 0x400445a0, P.struct.pack('i', P.time.CLOCK_MONOTONIC))
         return seen
 
     def test_active_idle_on_or_off_has_no_periodic_timeout(self):
-        for mode in (0, 1):
+        for mode in (0, 1, 3, -1):
             with self.subTest(mode=mode):
                 bus = FakeDesktop(mode)
                 self.assertEqual(self.run_steps(bus, [(10, None)]), [None])
@@ -405,18 +446,18 @@ class IdleWaitTests(unittest.TestCase):
         self.assertIsNone(waits[3])
 
     def test_short_release_cancels_timer_and_waits_indefinitely(self):
-        bus = FakeDesktop()
-        waits = self.run_steps(bus, [(0, (1, 116, 1)), (.1, (1, 116, 0)), (3, None)])
-        self.assertEqual(waits, [None, .8, None])
-        self.assertIn(('set', 1), bus.calls)
+        for event_clock in (True, False):
+            bus = FakeDesktop()
+            waits = self.run_steps(bus, [(0, (1, 116, 1)), (.1, (1, 116, 0)), (3, None)],
+                                   event_clock=event_clock)
+            self.assertEqual(waits, [None, .8, None])
+            self.assertIn(('set', 1), bus.calls)
 
     def test_wake_and_suppressed_gestures_have_no_long_timer(self):
-        for mode in (1, None):
-            with self.subTest(mode=mode):
+        for screen in (False, None):
+            with self.subTest(screen=screen):
                 bus = FakeDesktop()
-                # First mode read activates the helper, second is at key-down.
-                bus.mode = Mock(side_effect=[0, mode])
-                waits = self.run_steps(bus, [(0, (1, 116, 1)), (1, None)])
+                waits = self.run_steps(bus, [(0, (1, 116, 1)), (1, None)], screen=screen)
                 self.assertEqual(waits, [None, None])
                 self.assertNotIn(('dialog',), bus.calls)
 
@@ -666,7 +707,8 @@ class SettingsTests(unittest.TestCase):
 class LidTests(unittest.TestCase):
     def setUp(self):
         self.bus = FakeDesktop()
-        self.key = P.PowerKey(self.bus, clock=lambda: 4, emit=lambda _: None)
+        self.key = P.PowerKey(self.bus, clock=lambda: 4, emit=lambda _: None,
+                              screen=lambda: self.bus.current_mode == 0)
         self.logs = []
         self.lid = P.Lid(self.key, self.logs.append)
 
@@ -674,8 +716,6 @@ class LidTests(unittest.TestCase):
         for value in (1, 1, 2, -1, 0, 0):
             self.lid.state(value)
         self.assertEqual(self.bus.calls, [('set', 1), ('set', 0)])
-        self.assertFalse(self.key.we_blanked)
-        self.assertEqual(self.key.blanked_at, 4)
         self.assertEqual(self.logs, ['lid closed ok', 'lid open ok'])
 
     def test_start_closed_blanks_but_start_open_does_not_wake(self):
@@ -684,15 +724,13 @@ class LidTests(unittest.TestCase):
         self.lid.last = None
         self.lid.state(1, initial=True)
         self.assertEqual(self.bus.calls, [('set', 1)])
-        self.assertTrue(self.key.we_blanked)
 
     def test_closed_lid_does_not_reblank_after_power_key_wakes(self):
         self.lid.state(1)
         self.key.event(1, 116, 1)
         self.key.event(1, 116, 0)
         self.lid.state(1)
-        self.assertEqual(self.bus.calls, [('set', 1), ('get',), ('set', 0)])
-        self.assertFalse(self.key.we_blanked)
+        self.assertEqual(self.bus.calls, [('set', 1), ('set', 0)])
         self.lid.state(0)
         self.assertEqual(self.bus.calls[-1], ('set', 0))
 
@@ -700,8 +738,6 @@ class LidTests(unittest.TestCase):
         self.bus.success = False
         self.lid.state(1); self.lid.state(1)
         self.assertEqual(self.bus.calls, [('set', 1)])
-        self.assertFalse(self.key.we_blanked)
-        self.assertIsNone(self.key.blanked_at)
         self.assertEqual(self.logs, ['lid closed failed'])
         self.bus.success = True
         self.lid.state(0)
@@ -783,6 +819,13 @@ class LidTests(unittest.TestCase):
         self.assertEqual(cfg.sections(), ['Login'])
         self.assertEqual(dict(cfg['Login']), dict.fromkeys(
             ['HandleLidSwitch', 'HandleLidSwitchExternalPower', 'HandleLidSwitchDocked'], 'ignore'))
+
+    def test_powerkey_logind_dropin_exact_keys(self):
+        cfg = configparser.ConfigParser(interpolation=None); cfg.optionxform = str
+        cfg.read(TOOL / 'device-rootfs/etc/systemd/logind.conf.d/20-dby-w09-powerkey.conf')
+        self.assertEqual(cfg.sections(), ['Login'])
+        self.assertEqual(dict(cfg['Login']), {'HandlePowerKey': 'ignore',
+                                            'HandlePowerKeyLongPress': 'poweroff'})
 
 
 class MultiSettingsTests(unittest.TestCase):
@@ -919,9 +962,9 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), (source / 'etc' / name).read_bytes())
             configs = sorted(p.relative_to(tree / 'etc').as_posix() for p in (tree / 'etc').rglob('*')
                              if p.is_file() or p.is_symlink())
-            # Public overlay has 21 configs including the manual Venus rule;
-            # the bundle adds one private runtime configuration, giving 22.
-            self.assertEqual(len(configs), 21)
+            # New power-key drop-in: 29 public configs, 30 with the private one.
+            self.assertEqual(len(configs), 29)
+            self.assertIn('systemd/logind.conf.d/20-dby-w09-powerkey.conf', configs)
             self.assertIn('modprobe.d/11-dby-venus.conf', configs)
             self.assertFalse(any(name.startswith('bin/') for name in configs))
 
@@ -940,7 +983,8 @@ class PackagingTests(unittest.TestCase):
                                       "find_lid().open('rb', buffering=0)"})
         ioctls = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
                   and isinstance(n.func, ast.Attribute) and n.func.attr == 'ioctl']
-        self.assertEqual(ioctls, ['fcntl.ioctl(fd, 2147566875, bits, True)'])
+        self.assertEqual(set(ioctls), {'fcntl.ioctl(fd, 2147566875, bits, True)',
+                                     "fcntl.ioctl(fd, 1074021792, struct.pack('i', time.CLOCK_MONOTONIC))"})
         self.assertEqual(P.EVENT.size, 24)
 
 
