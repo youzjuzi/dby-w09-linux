@@ -30,7 +30,7 @@ All results below come from **one tablet, one SD card and one owner on 2026-11-0
 | Cover (lid) switch | 11 close/open pairs without failure; closing blanks, opening wakes, touch works; attaching the pen does not blank; a short power press wakes the screen while the cover is closed; no suspend entry in the kernel log; `hall-lid` has the ACL and logind shows all three lid handlers set to `ignore` | H + R |
 | Screen-off draw | About 0.84 W (60 s window, Wi-Fi connected, battery discharging) after the idle-wait change, versus 0.90 W before it; single windows, not repeated | H |
 
-### PW2 kernel-state decision (bundle `20261116-9`, 2026-11-16)
+### Kernel-state decision (bundle `20261116-9`, 2026-11-16)
 
 Same single tablet and card; **H** = journal read by the maintainer, **R** = user observation.
 
@@ -47,7 +47,7 @@ were recovered by the display watchdog in about 5–6 s; they are a panel issue,
 such a black screen the kernel state reads “on”, so a press is treated as a tap and blanks (H). The cover
 switch was not re-tested in this round.
 
-PW2(包 `20261116-9`,2026-11-16,同一台平板):GNOME 空闲息屏后单按 3/3 一下即亮、无误关;短按开关 10 对判定全对,处理延迟 0–1 ms;
+内核状态判定(包 `20261116-9`,2026-11-16,同一台平板):GNOME 空闲息屏后单按 3/3 一下即亮、无误关;短按开关 10 对判定全对,处理延迟 0–1 ms;
 亮屏长按弹框(用户取消)、灭屏按住约 1.7 s 只亮屏;锁屏单按出现锁屏界面并可解锁;logind 兜底配置生效,无桌面长按关机未实测(U)(H/R)。
 13 次亮屏中 3 次面板黑屏由显示看门狗约 5–6 s 救回,属面板问题;黑屏期间内核状态为"亮",此时按键按短按处理(H)。合盖本轮未复测。
 
@@ -174,7 +174,7 @@ requires no change.
 
 ## Key-down decision table / 按下时判定
 
-The PW2 implementation reads the unique `/sys/class/drm/card*-DSI-*`
+Since bundle `20261116-9` the helper reads the unique `/sys/class/drm/card*-DSI-*`
 connector's `enabled` and `dpms`, plus
 `/sys/class/backlight/rt8555-backlight/bl_power`, directly at key-down.
 There is no key-down D-Bus property query or blank-history cache.
@@ -208,7 +208,7 @@ read “on.” The lag field helps observe this delay; the change does not claim
 hardware elimination of the race. Input remains non-exclusive so GNOME can
 reset idle time and present the lock screen on input.
 
-PW2 在按下时直接读唯一 DSI 连接器的 enabled/dpms 与 RT8555 的 bl_power，
+自包 `20261116-9` 起,按下时直接读唯一 DSI 连接器的 enabled/dpms 与 RT8555 的 bl_power，
 三项恰为 enabled/On/0 才算亮；三项可读且值有效但不全满足时（含过渡态）算灭。
 找不到或有多个 DSI、任一文件读取失败或值不认识则忽略本次按键并记录日志。
 不再在按下时调用 D-Bus 查询，也不保留关屏历史缓存；Mutter 能回答整数即可接管，
