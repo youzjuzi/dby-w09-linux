@@ -87,9 +87,10 @@ other values reject probe. An observed 01 ends that permission. Later unowned
 
 First work is scheduled about two seconds after probe, then every thirty seconds.
 `chg-state-change` and both `usbin-plugin` edges queue an immediate sample.
-That evaluation schedules one follow-up after two seconds, then returns to the
+A state-change evaluation schedules a follow-up after two seconds; plug and
+supplier events schedule it from the latest event, then return to the
 thirty-second period: FG current refreshes roughly once a second and can still
-be negative at the IRQ. Another state/plug IRQ restarts this sequence; bark does
+be negative at the IRQ. Another state/plug IRQ restarts its follow-up; bark does
 not start, consume or reschedule the follow-up. All existing policy/write gates
 and the rule that negative current is Not charging remain unchanged.
 The threaded `wdog-bark` handler warns once and runs the same fresh-sample,
@@ -177,22 +178,50 @@ existing temperature-error path. Both the charging stop/resume gates and the
 38/36 C PD thermal policy use the compensated `temp_decic`; their numeric
 thresholds and hysteresis are unchanged. Charger `chg_temp` is not corrected.
 
-An evaluation whose USB online state differs from the previous evaluation
-skips temperature-based thermal drops/rises, because FG current can still
-represent the preceding state. Offline ceiling reset, parameter clamping and
-read-error fallback remain active. The first evaluation has no previous state
-and applies normal thermal checks. The existing two-second IRQ settle sample
-checks temperatures normally when the state is unchanged. The charging
-enable/stop policy still runs at every evaluation; no new timer, register
-access or desktop temperature property is added.
+Each `usbin-plugin` IRQ or `external_power_changed` notification records an
+edge timestamp, even when the USB online bit has not changed yet. For two
+seconds after the most recent event, every battery-temperature policy check
+uses the last valid compensated temperature sampled **outside** an edge
+window. Samples inside a window never refresh that cache. If no such sample
+exists yet (including first boot), the current value is used. The selection
+does not hide current ADC/FG errors: offline ceiling reset, parameter clamping
+and read-error fallback remain unchanged. Charger `chg_temp` is always fresh.
+This replaces the earlier online-state-change thermal-skip rule; temperature
+policy continues to run with the selected value, including FULL bookkeeping
+and charging stop/resume.
 
-Logs and read-only debugfs retain `temp_decic` as the compensated result and
-add `temp_raw_decic` and `therm_ir_uv` (the signed voltage subtracted). Thermal
-drop lines include all three. Consult `temp_error`: on failed compensation,
-compensated temperature/correction remain zero placeholders; the raw value is
-available only when raw ADC/model conversion succeeded. Instantaneous edge
-readings can still combine a new ADC value with old FG current; this candidate
-has not demonstrated the requested <=1 C compensated edge jump on hardware.
+The existing delayed work guarantees a sample at/after the latest edge's
+2-second deadline, with the window extended by any later plug/supplier event.
+A sample begun inside the window cannot consume the post-window evaluation
+merely because its I/O finishes after the deadline. `chg-state-change` keeps
+its existing settle resample but does not start or extend the temperature hold;
+`wdog-bark` and periodic sampling do not record edges either. No new timer,
+register access or desktop temperature property is added.
+
+Logs and read-only debugfs retain `temp_decic` as the current compensated
+measurement, alongside `temp_raw_decic` and `therm_ir_uv` (signed voltage
+subtracted). `temp_policy_decic` records the temperature selected for policy;
+`temp_held=1` means it came from the outside-window cache. Thermal drop lines
+include these fields. Consult `temp_error`: failed current compensation leaves
+measurement/correction zero placeholders; a held value does not clear that
+error. The raw value exists only when raw ADC/model conversion succeeded.
+
+The 2026-11-16 fix task supplies these observations for bundle `20261116-4`
+(H, owner-provided logs, about 1.1-second sampling): a supplier notification at
+255.212 s preceded the USB offline indication by 4 ms. USB still read online,
+FG current was the old +3.46 A, and the raw temperature had already risen to
+36.5 C. Compensation therefore produced 41.4 C and a false drop to 2250 mA.
+This explains why skipping only online-state transitions missed that sample.
+FG current refreshed about one second later (-1.04 A after 1.1 seconds).
+With refreshed current, unplug changed compensated temperature from 35.0 to
+35.4 C and plug from 32.4 to 32.2–32.4 C; one initial plug sample read too low
+at 28.3 C. The two-second hold covers that reported refresh delay and matches
+the existing settle interval. In a 12.5-minute run at 2500 mA (SOC 63–76%),
+compensated temperature levelled at 36.0–36.3 C, battery current fell from
+3.4 to 2.6 A near constant-voltage charging, and chip die temperature stayed
+at/below 58.8 C; only the unplug anomaly caused a drop. These preceding-bundle
+observations do not validate this hold candidate; repeated edges and reboot
+remain pending device checks.
 
 Current-drop compensation does **not** establish true cell temperature.
 The task reports a further slow 4.7 C rise over 2.8 minutes while charging;
@@ -319,8 +348,9 @@ The board retains the owner stock 5 V / 2 A sink PDO and requests up to
 while the default input-current ceiling is 2.5 A at 9 V (22.5 W).
 Source PDOs and dual-role policy are unchanged.
 The charger links to the Type-C supply with standard `power-supplies`;
-`.external_power_changed` queues the existing work immediately without setting
-the two-second settle flag. An already pending IRQ settle deadline is preserved.
+`.external_power_changed` queues the existing work immediately and restarts
+the two-second temperature hold and edge settle deadline described above.
+An already pending state-change IRQ settle deadline is preserved.
 There is no new poller or notifier chain. Each existing evaluation reads ONLINE,
 USB_TYPE, VOLTAGE_NOW and CURRENT_MAX with
 `power_supply_get_property_from_supplier()`; no private supplier reference is

@@ -67,6 +67,8 @@ struct dby_chg_snapshot {
 	struct dby_chg_icl icl;
 	struct dby_chg_thermal thermal;
 	int chg_temp_mc, chg_temp_error, pd9v_max_ma;
+	int temp_policy_decic;
+	bool temp_held;
 	bool pd_low_batt;
 	u64 sampled_ms;
 	unsigned int reason, attempts, pets, write_errors;
@@ -85,6 +87,9 @@ struct dby_chg {
 	bool stopping;
 	bool settle_pending;
 	u64 settle_at_ms;
+	bool edge_pending, temp_valid;
+	u64 edge_ms;
+	int last_temp_decic;
 	u64 start_ms, last_attempt_ms, last_log_ms;
 	struct dby_chg_snapshot latest;
 	struct dentry *debug_dir;
@@ -188,8 +193,7 @@ static void chg_sample(struct dby_chg *chg, struct dby_chg_sample *s)
 				s->current_ua, &s->temp_decic, &s->therm_ir_uv);
 }
 /* Update before enable policy; apply the resulting ICL in this evaluation. */
-static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s,
-			       bool online_changed)
+static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s)
 {
 	int old = s->thermal.cap_ma;
 	int direction;
@@ -198,13 +202,13 @@ static void chg_thermal_sample(struct dby_chg *chg, struct dby_chg_snapshot *s,
 	s->chg_temp_mc = 0;
 	s->chg_temp_error = iio_read_channel_processed(chg->chg_temp, &s->chg_temp_mc);
 	direction = dby_chg_thermal_update(&s->thermal, s->pd9v_max_ma,
-		dby_chg_online(&s->sample), online_changed,
-		s->sample.temp_error, s->sample.temp_decic,
+		dby_chg_online(&s->sample), s->sample.temp_error, s->temp_policy_decic,
 		s->chg_temp_error, s->chg_temp_mc, chg_now(chg));
 	if (direction < 0)
-		dev_info(chg->dev, "PD thermal drop: thermal_cap_ma=%d previous_ma=%d pd9v_max_ma=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d chg_temp_mc=%d batt_temp_error=%d chg_temp_error=%d drops=%u\n",
+		dev_info(chg->dev, "PD thermal drop: thermal_cap_ma=%d previous_ma=%d pd9v_max_ma=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d temp_policy_decic=%d temp_held=%u chg_temp_mc=%d batt_temp_error=%d chg_temp_error=%d drops=%u\n",
 			 s->thermal.cap_ma, old, s->pd9v_max_ma, s->sample.temp_decic,
 			 s->sample.temp_raw_decic, s->sample.therm_ir_uv,
+			 s->temp_policy_decic, s->temp_held,
 			 s->chg_temp_mc, s->sample.temp_error, s->chg_temp_error, s->thermal.drops);
 }
 static struct dby_chg_snapshot chg_snapshot(struct dby_chg *chg)
@@ -604,7 +608,8 @@ static int chg_toggle(struct dby_chg *chg, struct dby_chg_snapshot *s,
 static void chg_evaluate(struct dby_chg *chg, bool from_work)
 {
 	struct dby_chg_snapshot s, old;
-	u64 now;
+	struct dby_chg_sample policy;
+	u64 now, sample_ms;
 	bool event, summary;
 	enum dby_chg_action action;
 	unsigned int pet_reason;
@@ -616,30 +621,41 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		return;
 	}
 	s = old = chg_snapshot(chg);
+	sample_ms = chg_now(chg);
 	chg_sample(chg, &s.sample);
+	/* Never refresh the cache from an edge-window sample. Errors remain
+	 * current even when the selected temperature comes from the cache. */
+	s.temp_held = chg->edge_pending &&
+		sample_ms - chg->edge_ms < DBY_CHG_SETTLE_MS;
+	if (!s.temp_held && !s.sample.temp_error) {
+		chg->last_temp_decic = s.sample.temp_decic;
+		chg->temp_valid = true;
+	}
+	s.temp_held = s.temp_held && chg->temp_valid;
+	s.temp_policy_decic = s.temp_held ? chg->last_temp_decic : s.sample.temp_decic;
+	policy = s.sample;
+	policy.temp_decic = s.temp_policy_decic;
 	s.pd_low_batt = dby_chg_low_batt(s.pd_low_batt,
 		s.sample.voltage_error, s.sample.voltage_uv);
-	/* Compare evaluations, not ICL write success: FG current may lag an edge.
-	 * The existing IRQ settle sample evaluates temperatures normally again. */
-	chg_thermal_sample(chg, &s, old.evaluated &&
-		dby_chg_online(&old.sample) != dby_chg_online(&s.sample));
+	chg_thermal_sample(chg, &s);
 	now = chg_now(chg);
 	mutex_lock(&chg_limits_lock);
 	low = temp_min_decic;
 	high = temp_max_decic;
 	mutex_unlock(&chg_limits_lock);
-	if (dby_chg_policy(&s.control, &s.sample, &s.state, low, high))
+	if (dby_chg_policy(&s.control, &policy, &s.state, low, high))
 		s.state.qualifying = 0;
-	dby_chg_update(&s.state, &s.sample, now);
+	dby_chg_update(&s.state, &policy, now);
 	s.feeding = false;
 	s.write_error = 0;
 	/* Plan at the latest clock; fresh identity/old-value reads precede toggles. */
 	now = chg_now(chg);
-	action = dby_chg_plan(&s.control, &s.sample, &s.state, low, high, now, &s.reason);
+	action = dby_chg_plan(&s.control, &policy, &s.state, low, high, now, &s.reason);
 	if (action != CHG_KEEP)
 		toggle_error = chg_toggle(chg, &s, action, false);
+	policy.reg[CHG_ENABLE] = s.sample.reg[CHG_ENABLE];
 	now = chg_now(chg);
-	pet_reason = dby_chg_decide(&s.sample, &s.state, now,
+	pet_reason = dby_chg_decide(&policy, &s.state, now,
                              s.attempts, chg->last_attempt_ms);
 	/* An early IRQ samples policy without inventing a feeding failure.
 	 * A recent successful pet remains valid across a brief unplug/replug;
@@ -680,13 +696,14 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		old.icl.voltage_uv != s.icl.voltage_uv || old.icl.current_ua != s.icl.current_ua ||
 		old.icl.errors != s.icl.errors || old.pd9v_max_ma != s.pd9v_max_ma ||
 		old.thermal.cap_ma != s.thermal.cap_ma || old.chg_temp_error != s.chg_temp_error ||
-		old.pd_low_batt != s.pd_low_batt;
+		old.pd_low_batt != s.pd_low_batt || old.temp_held != s.temp_held;
 	summary = s.sampled_ms - chg->last_log_ms >= DBY_CHG_LOG_MS;
 	if (event || summary || s.write_error)
-		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u pd_low_batt=%u\n",
+		dev_info(chg->dev, "event=%u summary=%u elapsed_ms=%llu online=%d feeding=%u reason=%#x pets=%u write_errors=%u write_error=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d temp_policy_decic=%d temp_held=%u voltage_uv=%d current_ua=%d full=%u enable_reg=%02x want_enable=%u manage_stopped_reason=%#x icl_reg=%02x src=%s contract_mv=%d contract_ma=%d icl_writes=%u icl_stopped=%u icl_read_error=%d icl_error=%d allow_reg=%02x allow_writes=%u allow_read_error=%d allow_error=%d ovr_reg=%02x opt_reg=%02x ovr_writes=%u opt_writes=%u ovr_read_error=%d opt_read_error=%d ovr_error=%d opt_error=%d chg_temp_mc=%d chg_temp_error=%d pd9v_max_ma=%d thermal_cap_ma=%d thermal_drops=%u thermal_rises=%u pd_low_batt=%u\n",
 			 event, summary, s.sampled_ms, dby_chg_online(&s.sample), s.feeding,
 			 s.reason, s.pets, s.write_errors, s.write_error, s.sample.temp_decic,
 			 s.sample.temp_raw_decic, s.sample.therm_ir_uv,
+			s.temp_policy_decic, s.temp_held,
 			 s.sample.voltage_uv, s.sample.current_ua, s.state.full,
 			s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.stopped,
 			s.icl.reg, chg_source_name(s.icl.source), s.icl.voltage_uv / 1000,
@@ -708,16 +725,26 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		if (chg->settle_pending)
 			chg->settle_at_ms = scheduled_at + DBY_CHG_SETTLE_MS;
 		chg->settle_pending = false;
-		if (chg->settle_at_ms > scheduled_at)
-			delay = chg->settle_at_ms - scheduled_at;
-		else
+		if (chg->settle_at_ms && sample_ms >= chg->settle_at_ms)
 			chg->settle_at_ms = 0;
+		if (chg->settle_at_ms)
+			delay = chg->settle_at_ms > scheduled_at ?
+				chg->settle_at_ms - scheduled_at : 0;
+		if (chg->edge_pending) {
+			u64 deadline = chg->edge_ms + DBY_CHG_SETTLE_MS;
+
+			if (sample_ms >= deadline)
+				chg->edge_pending = false;
+			else
+				delay = min_t(unsigned int, delay,
+					deadline > scheduled_at ? deadline - scheduled_at : 0);
+		}
 		/* This sample covers IRQs received before taking operation_lock.
 		 * Replace any queued immediate run with the single settle sample.
-		 * Later IRQs set the flag again and restart the sequence. Bark
-		 * neither consumes the flag nor changes the work deadline.
-		 * Supplier events do not create a settle sample, but an existing
-		 * IRQ-set deadline must survive their intervening evaluation. */
+		 * State IRQs retain their settle sample. Plug/supplier events use
+		 * the latest edge deadline; neither state IRQs nor bark extend the
+		 * hold window. A sample begun inside the window cannot consume the
+		 * post-window evaluation even if its I/O crosses the deadline. */
 		mod_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(delay));
 	}
 	mutex_unlock(&chg->operation_lock);
@@ -729,25 +756,33 @@ static void chg_work(struct work_struct *work)
 
 	chg_evaluate(chg, true);
 }
-static void chg_external_power_changed(struct power_supply *psy)
+/* operation_lock serializes event timestamps, cache selection and teardown. */
+static void chg_queue_sample(struct dby_chg *chg, bool edge)
 {
-	struct dby_chg *chg = power_supply_get_drvdata(psy);
-
-	mutex_lock(&chg->operation_lock);
-	if (!chg->stopping)
-		mod_delayed_work(system_freezable_wq, &chg->work, 0);
-	mutex_unlock(&chg->operation_lock);
-}
-static irqreturn_t chg_changed_irq(int irq, void *data)
-{
-	struct dby_chg *chg = data;
-
 	mutex_lock(&chg->operation_lock);
 	if (!chg->stopping) {
-		chg->settle_pending = true;
+		if (edge) {
+			chg->edge_ms = chg_now(chg);
+			chg->edge_pending = true;
+		} else {
+			chg->settle_pending = true;
+		}
 		mod_delayed_work(system_freezable_wq, &chg->work, 0);
 	}
 	mutex_unlock(&chg->operation_lock);
+}
+static void chg_external_power_changed(struct power_supply *psy)
+{
+	chg_queue_sample(power_supply_get_drvdata(psy), true);
+}
+static irqreturn_t chg_changed_irq(int irq, void *data)
+{
+	chg_queue_sample(data, false);
+	return IRQ_HANDLED;
+}
+static irqreturn_t chg_plugin_irq(int irq, void *data)
+{
+	chg_queue_sample(data, true);
 	return IRQ_HANDLED;
 }
 static irqreturn_t chg_bark_irq(int irq, void *data)
@@ -776,7 +811,7 @@ static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
 	}
 	for (i = 0; i < ARRAY_SIZE(names); i++) {
 		ret = devm_request_threaded_irq(chg->dev, irqs[i], NULL,
-			i == 2 ? chg_bark_irq : chg_changed_irq,
+			i == 2 ? chg_bark_irq : i == 1 ? chg_plugin_irq : chg_changed_irq,
 			IRQF_ONESHOT, names[i], chg);
 		if (ret) {
 			while (i-- > 0)
@@ -858,9 +893,10 @@ static int chg_status_show(struct seq_file *seq, void *unused)
 		s.sample.reg[CHG_ENABLE], s.control.want_enable, s.control.count,
 		DBY_CHG_TOGGLE_LIMIT - s.control.count,
 		s.control.last_toggle_ms, s.control.stopped, s.control.owned_off);
-	seq_printf(seq, "identity_error=%d therm_uv=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d temp_error=%d voltage_uv=%d voltage_error=%d current_ua=%d current_error=%d capacity=%d capacity_error=%d\n",
+	seq_printf(seq, "identity_error=%d therm_uv=%d temp_decic=%d temp_raw_decic=%d therm_ir_uv=%d temp_policy_decic=%d temp_held=%u temp_error=%d voltage_uv=%d voltage_error=%d current_ua=%d current_error=%d capacity=%d capacity_error=%d\n",
 		s.sample.identity_error, s.sample.therm_uv, s.sample.temp_decic,
-		s.sample.temp_raw_decic, s.sample.therm_ir_uv, s.sample.temp_error,
+		s.sample.temp_raw_decic, s.sample.therm_ir_uv,
+			s.temp_policy_decic, s.temp_held, s.sample.temp_error,
 		s.sample.voltage_uv, s.sample.voltage_error, s.sample.current_ua,
 		s.sample.current_error, s.sample.capacity, s.sample.capacity_error);
 	for (i = 0; i < CHG_NREG; i++)

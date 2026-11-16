@@ -157,10 +157,9 @@ struct dby_chg_thermal {
  unsigned long long changed_ms;
 };
 /* Offline resets the ceiling. Parameter raises never erase a thermal cap.
- * Invalid temperature samples fail safe; only cool samples permit a rise.
- * A USB edge skips temperature-based steps, not reset/clamping/error fallback. */
+ * Invalid temperature samples fail safe; only cool samples permit a rise. */
 static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
- int max_ma, int online, int skip_temp, int batt_error, int batt_decic,
+ int max_ma, int online, int batt_error, int batt_decic,
  int chip_error, int chip_mc, unsigned long long now)
 {
  int old, direction = 0;
@@ -177,8 +176,6 @@ static inline int dby_chg_thermal_update(struct dby_chg_thermal *t,
  old = t->cap_ma;
  if (batt_error || chip_error) {
   t->cap_ma = DBY_CHG_PD9V_FLOOR_MA;
- } else if (skip_temp) {
-  return 0;
  } else if (batt_decic >= 380 || chip_mc >= 80000) {
   t->cap_ma -= DBY_CHG_THERMAL_STEP_MA;
   if (t->cap_ma < DBY_CHG_PD9V_FLOOR_MA)
