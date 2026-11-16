@@ -150,7 +150,7 @@ open/short validation or multi-temperature calibration is claimed.
 
 The 2026-11-16 task book supplies the following plug/unplug observations (H)
 from one idle tablet, sampled every 1.2 seconds. These are input evidence for
-this offline candidate, not device validation of the compensation:
+the compensation (device results for it are recorded below):
 
 | Edge | Battery current | Thermistor voltage | Uncompensated reading |
 |---|---|---|---|
@@ -238,8 +238,19 @@ The first evaluation was triggered by `chg-state-change`, which the previous
 task had excluded from edge handling. On the third unplug the unheld 39.1 C
 sample also entered the cache, contaminating the subsequent held samples.
 Including the state IRQ in the common edge path addresses that missing event
-coverage before cache selection. The current candidate still needs three
-plug/unplug trials and source/OTG regression on the device.
+coverage before cache selection.
+
+Device acceptance (2026-11-16, H, bundle `20261116-6`, one tablet, 1.1-second
+sampling plus driver logs): three unplugs and three plugs of the Lenovo PD
+source caused no thermal drop. Every unplug's first evaluation (USB still
+online, stale +2.1–2.2 A) already had `temp_held=1` and used the pre-edge
+32.8–33.7 C; the stale-current measurement of 37.7–38.0 C was logged only.
+Two seconds later fresh current gave 33.4–33.9 C. Plugs held the pre-edge value
+through the `08`→`02` transition and returned to 32.8–33.0 C after about three
+seconds. Boot with the source attached caused no drop. A 3 A Rp charger, unplug,
+a PC port and OTG behaved as before, with `write_errors=0`. On one plug, four
+events within 2.5 s extended the hold to about 4.8 s; there is no upper bound on
+the hold if edge events kept arriving less than two seconds apart (not observed).
 
 Current-drop compensation does **not** establish true cell temperature.
 The task reports a further slow 4.7 C rise over 2.8 minutes while charging;
@@ -497,11 +508,15 @@ remain unchanged. Logs/debugfs add `chg_temp_mc`, `chg_temp_error`,
 thermal drop logs a separate line. Values in debugfs describe the last sample,
 while the module parameter reflects the requested ceiling immediately.
 
-The supplied device observation has thermal-source register `1570=00`;
-stock was observed as `ca` and once as `00`. Hardware thermal regulation is
-therefore **probably disabled**, with the stock discrepancy unresolved. This
-change does not enable it and never writes `1570`. Software sampling is not
-continuous hardware thermal protection. The ramp is recorded below; actual
+An earlier note read `1570=00` as the thermal-source register and concluded
+that hardware thermal regulation was probably disabled. That address came from
+an unverified third-party patch and lies in the Type-C block; the whole
+`0x1570–0x1579` range reads `00`. A read-only dump on 2026-11-16 (H, charging)
+shows the MISC-block register `0x1670=13` and non-zero values at `0x1680–0x1689`.
+By the usual SMB5 layout this would mean die, skin and connector thermal sources
+are enabled with thresholds programmed before Linux (interpretation U; no
+datasheet). The driver never writes these registers. Software sampling is
+separate from any hardware thermal loop. The ramp is recorded below; actual
 input power and sustained operation with a case remain unmeasured.
 The separate device procedure stops at battery >=38 C, charger >=75 C, any
 thermal drop, hard reset or a hot enclosure; its charger stop threshold is
