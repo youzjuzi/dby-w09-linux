@@ -87,8 +87,8 @@ other values reject probe. An observed 01 ends that permission. Later unowned
 
 First work is scheduled about two seconds after probe, then every thirty seconds.
 `chg-state-change` and both `usbin-plugin` edges queue an immediate sample.
-A state-change evaluation schedules a follow-up after two seconds; plug and
-supplier events schedule it from the latest event, then return to the
+State/plug IRQs and supplier events share a follow-up two seconds after the
+latest event, then return to the
 thirty-second period: FG current refreshes roughly once a second and can still
 be negative at the IRQ. Another state/plug IRQ restarts its follow-up; bark does
 not start, consume or reschedule the follow-up. All existing policy/write gates
@@ -178,8 +178,9 @@ existing temperature-error path. Both the charging stop/resume gates and the
 38/36 C PD thermal policy use the compensated `temp_decic`; their numeric
 thresholds and hysteresis are unchanged. Charger `chg_temp` is not corrected.
 
-Each `usbin-plugin` IRQ or `external_power_changed` notification records an
-edge timestamp, even when the USB online bit has not changed yet. For two
+Each `chg-state-change` IRQ, `usbin-plugin` IRQ or `external_power_changed`
+notification records an edge timestamp, even when the USB online bit has not
+changed yet. For two
 seconds after the most recent event, every battery-temperature policy check
 uses the last valid compensated temperature sampled **outside** an edge
 window. Samples inside a window never refresh that cache. If no such sample
@@ -191,12 +192,15 @@ policy continues to run with the selected value, including FULL bookkeeping
 and charging stop/resume.
 
 The existing delayed work guarantees a sample at/after the latest edge's
-2-second deadline, with the window extended by any later plug/supplier event.
-A sample begun inside the window cannot consume the post-window evaluation
-merely because its I/O finishes after the deadline. `chg-state-change` keeps
-its existing settle resample but does not start or extend the temperature hold;
-`wdog-bark` and periodic sampling do not record edges either. No new timer,
-register access or desktop temperature property is added.
+2-second deadline, with the window extended by any later state/plug IRQ or
+supplier event. All three use the same edge and settle path. A sample begun
+inside the window cannot consume the post-window evaluation merely because
+its I/O finishes after the deadline. Of the three IRQs, only `wdog-bark` does
+not record an edge; periodic sampling and parameter writes do not either.
+Charge-state transitions between fast charge, trickle and full therefore also
+hold the last valid outside-window temperature for two seconds; this bounded
+hold is accepted by the task. No new timer, register access or desktop
+temperature property is added.
 
 Logs and read-only debugfs retain `temp_decic` as the current compensated
 measurement, alongside `temp_raw_decic` and `therm_ir_uv` (signed voltage
@@ -222,6 +226,20 @@ compensated temperature levelled at 36.0–36.3 C, battery current fell from
 at/below 58.8 C; only the unplug anomaly caused a drop. These preceding-bundle
 observations do not validate this hold candidate; repeated edges and reboot
 remain pending device checks.
+
+The next task supplies three plug/unplug trials for bundle `20261116-5`
+(2026-11-16, H, owner-provided logs). All three plugs held the preceding
+33.0/34.3/33.1 C policy value with `temp_held=1`, returned to fresh 32.8–33.0 C
+readings after about two seconds and caused no drop. All three unplugs instead
+first evaluated with USB still online and `temp_held=0`: old +2.57–2.68 A
+current produced 38.9–39.1 C and a false drop to 2250 mA. Plug/supplier events
+arrived only milliseconds later; the two-second samples read 34.2–34.3 C.
+The first evaluation was triggered by `chg-state-change`, which the previous
+task had excluded from edge handling. On the third unplug the unheld 39.1 C
+sample also entered the cache, contaminating the subsequent held samples.
+Including the state IRQ in the common edge path addresses that missing event
+coverage before cache selection. The current candidate still needs three
+plug/unplug trials and source/OTG regression on the device.
 
 Current-drop compensation does **not** establish true cell temperature.
 The task reports a further slow 4.7 C rise over 2.8 minutes while charging;
@@ -350,7 +368,6 @@ Source PDOs and dual-role policy are unchanged.
 The charger links to the Type-C supply with standard `power-supplies`;
 `.external_power_changed` queues the existing work immediately and restarts
 the two-second temperature hold and edge settle deadline described above.
-An already pending state-change IRQ settle deadline is preserved.
 There is no new poller or notifier chain. Each existing evaluation reads ONLINE,
 USB_TYPE, VOLTAGE_NOW and CURRENT_MAX with
 `power_supply_get_property_from_supplier()`; no private supplier reference is
@@ -455,7 +472,8 @@ only `1500`, `2000`, `2250`, `2500`, `2750` or `3000`, default **2500**. The the
 floor and temperature-read failure fallback remain **1500 mA**, independently
 of this default. Each
 accepted write schedules an immediate evaluation on the existing work queue,
-without setting an IRQ settle flag. Device registration/removal and scheduling
+without starting or extending the temperature-hold window. Device
+registration/removal and scheduling
 are serialized; parameter writes cannot queue work after detach. No new poller
 or register write site is added.
 

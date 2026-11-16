@@ -85,8 +85,6 @@ struct dby_chg {
 	struct mutex operation_lock;
 	spinlock_t status_lock;
 	bool stopping;
-	bool settle_pending;
-	u64 settle_at_ms;
 	bool edge_pending, temp_valid;
 	u64 edge_ms;
 	int last_temp_decic;
@@ -722,29 +720,19 @@ static void chg_evaluate(struct dby_chg *chg, bool from_work)
 		unsigned int delay = DBY_CHG_INTERVAL_MS;
 		u64 scheduled_at = chg_now(chg);
 
-		if (chg->settle_pending)
-			chg->settle_at_ms = scheduled_at + DBY_CHG_SETTLE_MS;
-		chg->settle_pending = false;
-		if (chg->settle_at_ms && sample_ms >= chg->settle_at_ms)
-			chg->settle_at_ms = 0;
-		if (chg->settle_at_ms)
-			delay = chg->settle_at_ms > scheduled_at ?
-				chg->settle_at_ms - scheduled_at : 0;
 		if (chg->edge_pending) {
 			u64 deadline = chg->edge_ms + DBY_CHG_SETTLE_MS;
 
 			if (sample_ms >= deadline)
 				chg->edge_pending = false;
 			else
-				delay = min_t(unsigned int, delay,
-					deadline > scheduled_at ? deadline - scheduled_at : 0);
+				delay = deadline > scheduled_at ? deadline - scheduled_at : 0;
 		}
 		/* This sample covers IRQs received before taking operation_lock.
 		 * Replace any queued immediate run with the single settle sample.
-		 * State IRQs retain their settle sample. Plug/supplier events use
-		 * the latest edge deadline; neither state IRQs nor bark extend the
-		 * hold window. A sample begun inside the window cannot consume the
-		 * post-window evaluation even if its I/O crosses the deadline. */
+		 * State/plug IRQs and supplier events share the latest edge deadline;
+		 * bark does not extend it. A sample begun inside the window cannot
+		 * consume the post-window evaluation even if its I/O crosses the deadline. */
 		mod_delayed_work(system_freezable_wq, &chg->work, msecs_to_jiffies(delay));
 	}
 	mutex_unlock(&chg->operation_lock);
@@ -757,32 +745,23 @@ static void chg_work(struct work_struct *work)
 	chg_evaluate(chg, true);
 }
 /* operation_lock serializes event timestamps, cache selection and teardown. */
-static void chg_queue_sample(struct dby_chg *chg, bool edge)
+static void chg_queue_sample(struct dby_chg *chg)
 {
 	mutex_lock(&chg->operation_lock);
 	if (!chg->stopping) {
-		if (edge) {
-			chg->edge_ms = chg_now(chg);
-			chg->edge_pending = true;
-		} else {
-			chg->settle_pending = true;
-		}
+		chg->edge_ms = chg_now(chg);
+		chg->edge_pending = true;
 		mod_delayed_work(system_freezable_wq, &chg->work, 0);
 	}
 	mutex_unlock(&chg->operation_lock);
 }
 static void chg_external_power_changed(struct power_supply *psy)
 {
-	chg_queue_sample(power_supply_get_drvdata(psy), true);
+	chg_queue_sample(power_supply_get_drvdata(psy));
 }
 static irqreturn_t chg_changed_irq(int irq, void *data)
 {
-	chg_queue_sample(data, false);
-	return IRQ_HANDLED;
-}
-static irqreturn_t chg_plugin_irq(int irq, void *data)
-{
-	chg_queue_sample(data, true);
+	chg_queue_sample(data);
 	return IRQ_HANDLED;
 }
 static irqreturn_t chg_bark_irq(int irq, void *data)
@@ -811,7 +790,7 @@ static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
 	}
 	for (i = 0; i < ARRAY_SIZE(names); i++) {
 		ret = devm_request_threaded_irq(chg->dev, irqs[i], NULL,
-			i == 2 ? chg_bark_irq : i == 1 ? chg_plugin_irq : chg_changed_irq,
+			i == 2 ? chg_bark_irq : chg_changed_irq,
 			IRQF_ONESHOT, names[i], chg);
 		if (ret) {
 			while (i-- > 0)
