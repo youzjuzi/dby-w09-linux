@@ -30,6 +30,27 @@ All results below come from **one tablet, one SD card and one owner on 2026-11-0
 | Cover (lid) switch | 11 close/open pairs without failure; closing blanks, opening wakes, touch works; attaching the pen does not blank; a short power press wakes the screen while the cover is closed; no suspend entry in the kernel log; `hall-lid` has the ACL and logind shows all three lid handlers set to `ignore` | H + R |
 | Screen-off draw | About 0.84 W (60 s window, Wi-Fi connected, battery discharging) after the idle-wait change, versus 0.90 W before it; single windows, not repeated | H |
 
+### PW2 kernel-state decision (bundle `20261116-9`, 2026-11-16)
+
+Same single tablet and card; **H** = journal read by the maintainer, **R** = user observation.
+
+| Behavior | Result | Evidence |
+|---|---|---|
+| Single press after GNOME idle blank (mode 3) | 3/3 woke with one press (`wake 23–43 ms ok lag=1 ms`), no following `short`; previously reproduced as a wake-then-blank race on `20261116-8` | H |
+| Tap blanks, key wakes | 10 pairs at ≥3 s intervals: every press decided correctly, processing lag 0–1 ms | H |
+| Hold | Screen on: `long 801 ms requested`, dialog cancelled by the user. Screen off, held about 1.7 s: wake only, no dialog, no blank | H + R |
+| Lock screen | Single press after idle blank and lock: lock screen shown, unlock normal | H |
+| logind fallback configuration | `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff` active; `gsd-media-keys` still holds `handle-power-key`. The no-desktop long press was **not** exercised (U) | H |
+
+Display black screens (panel error flag high with the CRTC active) still occurred on 3 of 13 wakes and
+were recovered by the display watchdog in about 5–6 s; they are a panel issue, not a key decision. During
+such a black screen the kernel state reads “on”, so a press is treated as a tap and blanks (H). The cover
+switch was not re-tested in this round.
+
+PW2(包 `20261116-9`,2026-11-16,同一台平板):GNOME 空闲息屏后单按 3/3 一下即亮、无误关;短按开关 10 对判定全对,处理延迟 0–1 ms;
+亮屏长按弹框(用户取消)、灭屏按住约 1.7 s 只亮屏;锁屏单按出现锁屏界面并可解锁;logind 兜底配置生效,无桌面长按关机未实测(U)(H/R)。
+13 次亮屏中 3 次面板黑屏由显示看门狗约 5–6 s 救回,属面板问题;黑屏期间内核状态为"亮",此时按键按短按处理(H)。合盖本轮未复测。
+
 **Not validated (U):** `stop`/`mask`/`unmask`, restoration after a crash or SIGKILL, the login screen (GDM),
 starting with the cover already closed, touch waking a blanked screen, the suspend path, logout/relogin cycles
 and long-term reliability. The intermittent black screen is unresolved; the 50-cycle run did not reproduce it,
