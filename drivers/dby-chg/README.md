@@ -336,7 +336,27 @@ for test in core therm enable; do
         -o "$TEST_OUTPUT/test-$test"
     "$TEST_OUTPUT/test-$test"
 done
+python3 -I -B drivers/dby-chg/test-pm.py
 ```
+
+## System sleep preparation (offline)
+
+Only `usbin-plugin` is attached as a system wake IRQ, using
+`device_init_wakeup()` and `devm_pm_set_wake_irq()`. The PM core arms and
+disarms it according to the device's `power/wakeup` setting. Managed cleanup
+detaches the wake IRQ before disabling wakeup and freeing the IRQs; setup
+errors fail probe. Old DTBs without the complete IRQ set retain polling and
+do not gain wake capability. Charge-state and watchdog IRQs remain ordinary
+IRQs. This is preparation for battery-only suspend; suspend while charging
+is not supported by the intended policy because the watchdog needs service.
+
+There is no suspend callback or new register write. Resume (also thaw/restore)
+queues the existing freezable worker immediately, with the existing two-second
+edge settling sample and stop guard. Hardware access occurs after thaw through
+the unchanged sampling/control path. This does not enable automatic suspend
+or establish that USB insertion wakes this board; suspend and wake reliability
+remain unverified (U). The host PM test executes the actual IRQ setup and resume
+functions with injected resource/setup failures and teardown checks.
 
 ## 中文摘要
 

@@ -8,6 +8,8 @@ kernel/drivers/clk/qcom/dispcc-sm8250.ko
 kernel/drivers/dma/qcom/gpi.ko
 kernel/drivers/soc/qcom/mdt_loader.ko
 kernel/drivers/soc/qcom/ocmem.ko
+# Read-only RPMh sleep statistics; loaded by the board's OF modalias.
+kernel/drivers/soc/qcom/qcom_stats.ko
 kernel/drivers/soc/qcom/llcc-qcom.ko
 kernel/drivers/soc/qcom/ubwc_config.ko
 kernel/drivers/regulator/qcom-refgen-regulator.ko

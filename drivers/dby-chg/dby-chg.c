@@ -9,6 +9,9 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
@@ -759,6 +762,16 @@ static void chg_external_power_changed(struct power_supply *psy)
 {
 	chg_queue_sample(power_supply_get_drvdata(psy));
 }
+static int chg_resume(struct device *dev)
+{
+	/* The freezable worker runs after thaw, using the existing edge settle
+	 * window and fresh reads. Do not perform charging I/O in the PM callback.
+	 */
+	chg_queue_sample(dev_get_drvdata(dev));
+	return 0;
+}
+static DEFINE_SIMPLE_DEV_PM_OPS(chg_pm_ops, NULL, chg_resume);
+
 static irqreturn_t chg_changed_irq(int irq, void *data)
 {
 	chg_queue_sample(data);
@@ -772,6 +785,10 @@ static irqreturn_t chg_bark_irq(int irq, void *data)
 	/* Fresh reads, policy, pet spacing and fault latch share the worker path. */
 	chg_evaluate(chg, false);
 	return IRQ_HANDLED;
+}
+static void chg_wakeup_disable(void *dev)
+{
+	device_init_wakeup(dev, false);
 }
 static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
 {
@@ -798,7 +815,19 @@ static int chg_request_irqs(struct platform_device *pdev, struct dby_chg *chg)
 			return dev_err_probe(chg->dev, ret, "cannot request charger IRQs\n");
 		}
 	}
-	dev_info(chg->dev, "three charger IRQs active; 30-second periodic sampling\n");
+	/* Only USB presence wakes the system; PM core arms it during suspend.
+	 * Register after requesting all IRQs so devres detaches wake state first.
+	 */
+	ret = device_init_wakeup(chg->dev, true);
+	if (ret)
+		return dev_err_probe(chg->dev, ret, "cannot initialize charger wakeup\n");
+	ret = devm_add_action_or_reset(chg->dev, chg_wakeup_disable, chg->dev);
+	if (ret)
+		return ret;
+	ret = devm_pm_set_wake_irq(chg->dev, irqs[1]);
+	if (ret)
+		return dev_err_probe(chg->dev, ret, "cannot attach USB presence wake IRQ\n");
+	dev_info(chg->dev, "three charger IRQs active; USB presence wakeup; 30-second periodic sampling\n");
 	return 0;
 polling:
 	dev_info(chg->dev, "charger IRQs unavailable; using 30-second polling\n");
@@ -1047,7 +1076,8 @@ static const struct of_device_id chg_match[] = {
 MODULE_DEVICE_TABLE(of, chg_match);
 static struct platform_driver chg_driver = {
 	.probe = chg_probe, .remove = chg_remove, .shutdown = chg_stop,
-	.driver = { .name = "dby-chg", .of_match_table = chg_match },
+	.driver = { .name = "dby-chg", .of_match_table = chg_match,
+		    .pm = pm_sleep_ptr(&chg_pm_ops) },
 };
 module_platform_driver(chg_driver);
 MODULE_DESCRIPTION("DBY-W09 guarded PM8150B charging manager");
