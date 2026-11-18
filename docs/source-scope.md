@@ -6,8 +6,8 @@ Bilingual inventory for the 2026-11-02 development baseline. Hardware results (H
 
 | Component / 组件 | Included / 收录内容 | External inputs and limits / 外部输入与限制 |
 |---|---|---|
-| U-Boot | Twelve patches, configuration, board descriptions, build and Recovery repacking / 十二补丁、配置、板级描述及构建打包 | Pinned upstream/toolchain and own stock Recovery / 锁定上游、工具链、自有原厂 Recovery |
-| Linux | Ten patches, configuration, board DTS, panel/memory extractors / 十补丁、配置、板级源码与提取工具 | Upstream source, owner-generated panel header and memory include / 上游、所有者生成的面板与内存数据 |
+| U-Boot | Thirteen patches, configuration, board descriptions, build and Recovery repacking / 十三补丁、配置、板级描述及构建打包 | Pinned upstream/toolchain and own stock Recovery / 锁定上游、工具链、自有原厂 Recovery |
+| Linux | Eighteen patches, configuration, board DTS, panel/memory extractors / 十八补丁、配置、板级源码与提取工具 | Upstream source, owner-generated panel header and memory include / 上游、所有者生成的面板与内存数据 |
 | Backlight/gauge / 背光电量计 | Out-of-tree sources and integration notes / 树外源码与接入说明 | Matching prepared kernel/source pair and DT wiring / 匹配内核构建树、DT 接入 |
 | Touch / 触摸 | Driver, headers, offline reconstruction/generation/validation / 驱动与离线重建生成校验 | Exact owner AFE, GNU objdump 2.46, seven locked inputs and generated table; H + R short new-baseline check with guard=0, 2026-11-02; stylus/three-finger gestures/long-term behavior U / 精确 AFE、七项锁定输入和生成表；新基线 guard=0 短时检查 H + R，笔／三指手势／长期表现 U |
 | [Bundle tools](../tools/dby-bundle/README.md) | p1 builder, initramfs, module list, runtime overlay, manifests / p1 构建、运行时与清单 | Explicit matching built inputs and locked firmware/configuration / 显式匹配产物及锁定固件配置 |

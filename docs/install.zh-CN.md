@@ -38,9 +38,9 @@ For an SD-only rebuild with a working Recovery/U-Boot, retain it and skip the U-
   ../downloads/u-boot-2026.10.tar.gz ../build/uboot-src ../build/uboot-out)
 ```
 
-脚本校验上游摘要，以 fuzz=0 应用十二个补丁，生成 `build/uboot-out/u-boot.bin`。依赖与原厂镜像重打包说明见该仓库 [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md)／[中文](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md)。
+脚本校验上游摘要，以 fuzz=0 应用十三个补丁，生成 `build/uboot-out/u-boot.bin`。依赖与原厂镜像重打包说明见该仓库 [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md)／[中文](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md)。
 
-内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用十二个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
+内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用十八个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
 
 独立构建设备树，内存 include 由所有者生成：
 
@@ -358,7 +358,7 @@ fastboot reboot
 USB 网络可 SSH 到 `root@172.16.42.1`，Wi-Fi 使用自己私下确认的平板地址。重装会重新生成 SSH 主机密钥，删除旧 known-host 条目前先确认是预期设备。只读检查包括 `uname -r`、`systemctl --failed`、`ip -brief address`、`getent hosts ports.ubuntu.com`、`timedatectl`，以及 NetworkManager、dby-seed 和显示日志；完整桌面另查 GDM／GNOME 与硬件渲染诊断。原始输出私下保存，对外只报告脱敏结论与 H／R／O／U 级别。
 
 - **GNOME 首次向导卡住**：记录中的首会话 dconf worker 忙转，根因未知。以新建桌面用户身份创建 `~/.config/gnome-initial-setup-done`，再用管理权限重启 GDM；这会结束图形会话。该方法恢复了既有会话（H + R），不作为通用修复。
-- **显示**：DP3 后隔至少 3 s 开关屏的短时单机检查改善（2026-11-15，维护者 H + R 记录）；快速连按条纹仍在，长期可靠性待观察。可用文档中的 safe_mode／SSH 路线诊断，不猜改硬件默认值或换触摸固件。
+- **显示**：2026-11-18 内核补丁 `0017` + `0018`（一台平板，包 `20261118-5`，H + R）解决了唤醒黑屏与快速连按条纹（46 次唤醒／切换含 38 次 `13–68 ms` 极限连按 `0/46` ESD 复位）；报警脚内核复位（`0013`）仍作为兜底保留，多日长期可靠性仍待验证。可用文档中的 safe_mode／SSH 路线诊断，不猜改硬件默认值或换触摸固件。
 - **Wi-Fi 已连但 DNS／时间不通**：当前配方提供 resolved stub 链接和时间服务，应分别检查链路、DNS 和时间，不能仅凭 Wi-Fi 关联推断。
 - **安装命令失败**：保留稳定错误码；`DBY_TRACE=1` 增加命令名／状态，不输出原始参数。`udevadm settle` 有限时且其超时可以非致命，但分区表／节点检查仍必须通过，详见[安装诊断](../tools/dby-install/README.md)。
 - **构建失败或中断**：检查过滤后的日志与清理结果；若报告保留了挂载工作区，应先检查，不能盲删。重试使用新输出目录。

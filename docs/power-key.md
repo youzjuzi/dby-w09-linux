@@ -42,19 +42,16 @@ Same single tablet and card; **H** = journal read by the maintainer, **R** = use
 | Lock screen | Single press after idle blank and lock: lock screen shown, unlock normal | H |
 | logind fallback configuration | `HandlePowerKey=ignore`, `HandlePowerKeyLongPress=poweroff` active; `gsd-media-keys` still holds `handle-power-key`. The no-desktop long press was **not** exercised (U) | H |
 
-Display black screens (panel error flag high with the CRTC active) still occurred on 3 of 13 wakes and
-were recovered by the display watchdog in about 5–6 s; they are a panel issue, not a key decision. During
-such a black screen the kernel state reads “on”, so a press is treated as a tap and blanks (H). The cover
-switch was not re-tested in this round.
+Display black screens (panel error flag high with the CRTC active) still occurred on 3 of 13 wakes in that 2026-11-16 test (`20261116-9`) and were recovered by the display watchdog in about 5–6 s; they were a panel/DSI-PHY wake issue, later resolved by kernel patches `0017` + `0018` (`2026-11-18`, see [Display recovery](#display-recovery--黑屏自动恢复)). During any active black screen the kernel state reads “on”, so a press is treated as a tap and blanks (H). The cover switch was not re-tested in this round.
 
 内核状态判定(包 `20261116-9`,2026-11-16,同一台平板):GNOME 空闲息屏后单按 3/3 一下即亮、无误关;短按开关 10 对判定全对,处理延迟 0–1 ms;
 亮屏长按弹框(用户取消)、灭屏按住约 1.7 s 只亮屏;锁屏单按出现锁屏界面并可解锁;logind 兜底配置生效,无桌面长按关机未实测(U)(H/R)。
-13 次亮屏中 3 次面板黑屏由显示看门狗约 5–6 s 救回,属面板问题;黑屏期间内核状态为"亮",此时按键按短按处理(H)。合盖本轮未复测。
+该轮（2026-11-16）13 次亮屏中 3 次面板黑屏由显示看门狗约 5–6 s 救回，属面板/从 PHY 唤醒问题，其根因已由 2026-11-18 内核补丁 `0017` + `0018` 修复（见下文[黑屏自动恢复](#display-recovery--黑屏自动恢复)）；黑屏期间内核状态为"亮",此时按键按短按处理(H)。合盖本轮未复测。
 
 **Not validated (U):** `stop`/`mask`/`unmask`, restoration after a crash or SIGKILL, the login screen (GDM),
 starting with the cover already closed, touch waking a blanked screen, the suspend path, logout/relogin cycles
-and long-term reliability. The intermittent black screen is unresolved; the 50-cycle run did not reproduce it,
-which is not proof of absence.
+and long-term reliability. Earlier intermittent wake black screens and rapid-toggle stripes were resolved on
+one tablet on 2026-11-18 (`0017` + `0018`); multi-day long-term stability and the 2026-11-16 idle-screen reset requiring touch remain U.
 
 以上结果来自**一台平板、一张 SD 卡、一位所有者，2026-11-08**，设备包 `20261102-20` 至 `-24`，
 不能推广到其他硬件、固件或长期使用。**H** = 维护者读过的日志；**R** = 用户观察。
@@ -65,7 +62,7 @@ which is not proof of absence.
 - 登录后启动：单元启动、输入 ACL 到位、三项 GNOME 设置被接管；ACL 稍晚时第一次启动失败、数秒后自动重试成功；root 会话下不再运行（H）。
 - 合盖：11 对开合无失败，合上关屏、打开亮屏、触摸可用，贴笔不关屏，合盖状态按电源键可亮屏，内核日志无 suspend，logind 三项合盖处理均为 ignore（H + R）。
 - 关屏待机约 0.84 W（60 秒单次，连着 Wi-Fi，放电），空闲等待改动前为 0.90 W；均为单次窗口（H）。
-- **未验证（U）**：stop/mask/unmask、崩溃或 SIGKILL 后的还原、登录界面（GDM）、启动时盖子已合上、触摸唤醒已关屏、休眠路径、登出再登录、长期可靠性。偶发黑屏仍未解决，50 轮未复现不等于不存在。
+- **未验证（U）**：stop/mask/unmask、崩溃还原、登录界面（GDM）、启动时盖子已合上、触摸唤醒已关屏、休眠路径、登出再登录、多日长期可靠性（唤醒黑屏与快速连按条纹根因已于 2026-11-18 经内核补丁 `0017` + `0018` 在一台平板上解决，2026-11-16 单次亮屏静止复位后需触摸及多日稳定性仍 U）。
 
 ## Disable and restore / 关闭与恢复
 
@@ -256,9 +253,9 @@ remain unverified on the device (U).
   `/run/systemd/user` is shared by user managers. Login-screen behavior is
   outside this feature and remains U. No system-wide dconf defaults are changed; the runtime logind lid
   and power-key policies are described in their sections.
-- Stop/mask and crash restoration, the login screen and long-term reliability
-  are U. Existing intermittent black screens remain unresolved; the 50-cycle
-  run did not reproduce one, which is not proof of absence.
+- Stop/mask and crash restoration, the login screen and multi-day reliability
+  are U. Earlier wake black screens and rapid-toggle stripes were resolved on one
+  tablet on 2026-11-18 (`0017` + `0018`); long-term absence remains unverified.
 
 未验证项包括 stop/mask、崩溃还原、登录/退出会话循环、GDM 行为和长期可靠性。压力脚本的内核读数不能代替用户观察屏幕与触摸（用户观察见上节）。
 
@@ -377,5 +374,10 @@ cooldown; there is no periodic retry timer.
 （旧用户态看门狗 5–6 s）。**已知限制**：一次在亮屏静止使用中发生，复位后仍黑，用户触摸屏幕后画面才出现（原因未明，U）；
 触摸或关开屏一次即可恢复。
 旧 Python 脚本与 unit 保留为手动备用、取消开机自启。先把 `esd_recovery` 置 0，
-再启动旧服务；恢复内核方案时先停旧服务再置 1，禁止两者同时恢复。置 0 不释放 GPIO，
-旧服务会使用已有的只读 `/dev/mem` 退路，启动成功与中断共存仍需上机确认。
+再启动旧服务；恢复内核方案时先停旧服务再置 1，禁止两者同时恢复。置 0 不释放 GPIO，旧服务会使用已有的只读 `/dev/mem` 退路，启动成功与中断共存仍需上机确认。
+
+**2026-11-18 root-cause resolution (`0017` + `0018`, bundle `20261118-5`, H + R on one tablet):**
+Two kernel patches resolved the wake black-screen and rapid-toggle stripe root causes so ESD resets were no longer triggered during stress testing: `0017` restores slave 7nm C-PHY `CMN_CLK_CFG1.DSICLK_SEL=3` after PHY reset (preventing slave `PHY1` from falling from `0x37` to `0x34`; `0/52` normal resets, `1/86` at `160 ms` on bundle `20261118-3`), and `0018` extends post-`vsn` panel bias settle delay from `2 ms` to `12 ms` (`0/46` ESD resets across 46 post-boot wakes and 60/120 Hz switches, including 38 rapid `13–68 ms` off-to-wake presses, on bundle `20261118-5`). Kernel alarm-IRQ recovery (`esd_recovery=1`) and the manual Python watchdog remain retained as safety nets; multi-day reliability and the earlier 2026-11-16 idle-screen reset requiring touch remain U.
+
+**2026-11-18 根因修复（内核补丁 `0017` + `0018`，包 `20261118-5`，一台平板 H + R）：**
+两个内核补丁解决了唤醒黑屏与快速连按条纹根因：`0017` 在每次 PHY 复位后恢复从 7nm C-PHY 的 `CMN_CLK_CFG1.DSICLK_SEL=3`（消除从 `PHY1` 由 `0x37` 掉回 `0x34`；包 `20261118-3` 常规 `0/52` 复位、仅 `160 ms` 极限连按 `1/86` 复位），`0018` 将 `vsn` 上电后偏压稳定延时从 `2 ms` 延长至 `12 ms`（包 `20261118-5` 开机后 46 次 60/120 Hz 唤醒与切换含 38 次 `13–68 ms` 极速连按 `0/46` ESD 复位）。内核报警脚中断自救（`esd_recovery=1`）与手动 Python 看门狗仍作安全兜底保留；多日长期可靠性及 2026-11-16 单次亮屏静止复位后需触摸仍为 U。

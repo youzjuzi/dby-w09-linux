@@ -17,18 +17,18 @@ This is a development system for one device/firmware baseline, not a general-pur
 - Your matching AFE source and the seven private touch-plan inputs described in the [preparation guide](docs/touch-plan-preparation.md), if enabling touch.
 - Firmware obtained by you from your own device, or appropriately licensed upstream replacements as documented in the firmware guide.
 
-This is a development-source workflow, not an out-of-box installer for arbitrary tablets. APT has no frozen snapshot; rootfs output is not guaranteed identical across dates. U-Boot has twelve patches: the default menu has Ubuntu / HarmonyOS reboot / Power off; the optional fourth action is TWRP. That route requires matching TWRP already in `recovery_ramdisk`; this repository does not install it. Consult the U-Boot repository for payload provenance, restrictions and current device-evidence limits.
+This is a development-source workflow, not an out-of-box installer for arbitrary tablets. APT has no frozen snapshot; rootfs output is not guaranteed identical across dates. U-Boot has thirteen patches: the default menu has Ubuntu / HarmonyOS reboot / Power off; the optional fourth action is TWRP. That route requires matching TWRP already in `recovery_ramdisk`; this repository does not install it. Consult the U-Boot repository for payload provenance, restrictions and current device-evidence limits.
 
 Historical identifiers in touch-plan fields have no external meaning; readers do not need to find corresponding internal material. Field-value changes are deferred to a separate post-release task, conditional on byte-identical generated plans and nt36523-thp.ko.
 
-## Current baseline: 2026-11-02 (updated 2026-11-15)
+## Current baseline: 2026-11-02 (updated 2026-11-18)
 
 Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = user observation; **O** = offline validation; **U** = unverified or not implemented. The table concerns the rebuilt baseline, not the earlier development system. Details and historical results are in [status](docs/status.md).
 
 | Area | Current result | Evidence |
 |---|---|---|
 | Boot and SD installation | Minimal test and full desktop cards boot through Recovery → U-Boot → Linux → Ubuntu | H, 2026-11-02 |
-| Display and GPU | 120 Hz GNOME Wayland session with Adreno acceleration; brightness control observed | H + R, 2026-11-02; DP3 normal-paced cycling improved on 2026-11-15 (H + R); rapid-toggle stripes remain |
+| Display and GPU | 30/60/120 Hz GNOME Wayland session with Adreno acceleration (`0014`, remember selected rate) and brightness control; alarm-IRQ kernel pipeline recovery (`0013`); `0017` (slave C-PHY `DSICLK_SEL` restore) + `0018` (12 ms post-VSN bias settle) resolved wake black screens and rapid-toggle stripes on one tablet (`46/46` wakes including `38` rapid `13–68 ms` presses, `0` ESD resets); static 30/60/120 Hz battery draw measured `4.18 / 4.30 / 4.58 W` median at `855/1023` | H + R (`0017`–`0018`), H (`P4`), 2026-11-18; multi-day stability and one 2026-11-16 idle-screen reset requiring touch U |
 | USB network / SSH | Root public-key login over the USB network | H, 2026-11-02 |
 | Wi-Fi, DNS and time | Seed-created connection, DNS, HTTP access and time synchronization | H, 2026-11-02 |
 | Wi-Fi 6 (HE) | A phone hotspot on 5 GHz (WPA2) negotiated an 80 MHz HE 2×2 link on one tablet; this is the link rate, not measured throughput. Firmware regulatory rules disable 2.4 GHz channels 12–14; the same hotspot on 2.4 GHz was not seen, cause unconfirmed | H + R, 2026-11-03 |
@@ -51,15 +51,15 @@ Evidence: **H** = recorded device checks reviewed by the maintainer; **R** = use
 
 Masking `dby-w09-audio-config.service` and `dby-w09-audio-ucm.service` disables configuration only; it does not stop kernel module loading or ADSP startup. Full onboard-audio disablement requires an owner-created blacklist and a reboot. Safe mode also only skips the two configuration units. See [exact disable/restore instructions](docs/audio-capture.md).
 
-DP3 improved screen cycling at intervals of at least 3 s in a short one-tablet check (2026-11-15, H + R); rapid-toggle stripes remain and long-term behavior needs observation. Other known issues include a possible first GNOME setup hang, extra-package seed timing, and power use measured only in a few one-tablet runs plus untested long-term stability. Touch was checked only in a short session; intermittent startup failures and long-term behavior remain U. A successful session does not resolve these issues.
+Patches `0017` + `0018` (`2026-11-18`, H + R) resolved wake black screens and rapid-toggle stripes on one tablet (`0/46` ESD resets across 46 wakes/switches including 38 rapid `13–68 ms` presses on bundle `20261118-5`); long-term stability and one 2026-11-16 idle-screen reset requiring touch remain U. Other known issues include a possible first GNOME setup hang, extra-package seed timing, and power use measured only in scoped one-tablet runs. Touch was checked only in a short session; intermittent startup failures and long-term behavior remain U. A successful session does not resolve these issues.
 
 ## Repository roles
 
 | Repository | Responsibility |
 |---|---|
 | [dby-w09-linux](https://github.com/youzjuzi/dby-w09-linux) | This hub: out-of-tree drivers, bundle/rootfs builders, SD installer, runtime configuration and user guides |
-| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Twelve patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
-| [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | Twelve patches for U-Boot v2026.10, configuration, build script and stock-Recovery repacking tool |
+| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Eighteen patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
+| [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | Thirteen patches for U-Boot v2026.10, configuration, build script and stock-Recovery repacking tool |
 
 ## Build → bundle → card → boot → check
 
