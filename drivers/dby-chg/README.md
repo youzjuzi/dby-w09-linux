@@ -353,9 +353,11 @@ is not supported by the intended policy because the watchdog needs service.
 There is no suspend callback or new register write. Resume (also thaw/restore)
 queues the existing freezable worker immediately, with the existing two-second
 edge settling sample and stop guard. Hardware access occurs after thaw through
-the unchanged sampling/control path. This does not enable automatic suspend
-or establish that USB insertion wakes this board; suspend and wake reliability
-remain unverified (U). The host PM test executes the actual IRQ setup and resume
+the unchanged sampling/control path. This does not enable automatic suspend.
+Device result (H, one tablet, 2026-11-17/18): USB insertion during s2idle woke
+the system through `usbin-plugin` or the Type-C CC IRQ; charging resumed with
+`write_errors=0`, and the watchdog kept being serviced for more than 3 minutes
+after wake. Long-term reliability remains U. The host PM test executes the actual IRQ setup and resume
 functions with injected resource/setup failures and teardown checks.
 
 ## 中文摘要
