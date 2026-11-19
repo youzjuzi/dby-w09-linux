@@ -40,7 +40,7 @@ Run the U-Boot repository's pinned build in new directories:
 
 The script checks its upstream hash, applies thirteen patches with fuzz=0 and builds `build/uboot-out/u-boot.bin`. See its [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md) / [Chinese](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md) instructions for dependencies and stock-image repacking.
 
-For the kernel, follow the complete [pinned build recipe](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md) ([中文](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)): check the archive, extract to a new source directory, apply eighteen patches with fuzz=0, copy your generated panel header, then run `olddefconfig` and `Image modules` with a separate `O=` directory. Record the actual final configuration and release. `PCI_PWRCTRL_PWRSEQ` becomes a module; the bundle module list includes it. Do not force its configuration or change digest gates to hide differences.
+For the kernel, follow the complete [pinned build recipe](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md) ([中文](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)): check the archive, extract to a new source directory, apply twenty-one patches with fuzz=0, copy your generated panel header, then run `olddefconfig` and `Image modules` with a separate `O=` directory. Record the actual final configuration and release. `PCI_PWRCTRL_PWRSEQ` becomes a module; the bundle module list includes it. Do not force its configuration or change digest gates to hide differences.
 
 Build the board DTB separately (the memory include is owner-generated):
 

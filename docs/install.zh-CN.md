@@ -40,7 +40,7 @@ For an SD-only rebuild with a working Recovery/U-Boot, retain it and skip the U-
 
 脚本校验上游摘要，以 fuzz=0 应用十三个补丁，生成 `build/uboot-out/u-boot.bin`。依赖与原厂镜像重打包说明见该仓库 [English](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.md)／[中文](https://github.com/youzjuzi/dby-w09-uboot/blob/main/README.zh-CN.md)。
 
-内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用十八个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
+内核按完整的[锁定配方](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.zh-CN.md)（[English](https://github.com/youzjuzi/dby-w09-kernel/blob/main/docs/build.md)）操作：校验压缩包、解包到新目录、fuzz=0 应用二十一个补丁、复制自己生成的面板头文件，再用独立 `O=` 目录执行 `olddefconfig` 和 `Image modules`。保留最终配置与 release。`PCI_PWRCTRL_PWRSEQ` 会成为模块，bundle 的模块列表已包含它；不要强行修改配置或摘要门禁来掩盖差异。
 
 独立构建设备树，内存 include 由所有者生成：
 

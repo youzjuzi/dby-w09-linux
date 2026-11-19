@@ -57,7 +57,7 @@ R4（2026-11-15）：维护者从空白 **16 GB 新卡**照公开文档全新安
 | 仓库 | 职责 |
 |---|---|
 | [dby-w09-linux](https://github.com/youzjuzi/dby-w09-linux) | 本中心仓库：树外驱动、bundle／rootfs 构建器、SD 安装器、运行时配置及用户教程 |
-| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Linux 7.2.10 的十八个补丁、配置、板级 DTS、所有者数据提取工具和构建配方 |
+| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Linux 7.2.10 的二十一个补丁、配置、板级 DTS、所有者数据提取工具和构建配方 |
 | [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | U-Boot v2026.10 的十三个补丁、配置、构建脚本和原厂 Recovery 重打包工具 |
 
 ## 构建 → bundle → 写卡 → 上机 → 检查

@@ -58,7 +58,7 @@ Patches `0017` + `0018` (`2026-11-18`, H + R) resolved wake black screens and ra
 | Repository | Responsibility |
 |---|---|
 | [dby-w09-linux](https://github.com/youzjuzi/dby-w09-linux) | This hub: out-of-tree drivers, bundle/rootfs builders, SD installer, runtime configuration and user guides |
-| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Eighteen patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
+| [dby-w09-kernel](https://github.com/youzjuzi/dby-w09-kernel) | Twenty-one patches and configuration for Linux 7.2.10, board DTS, owner-data extraction and build recipes |
 | [dby-w09-uboot](https://github.com/youzjuzi/dby-w09-uboot) | Thirteen patches for U-Boot v2026.10, configuration, build script and stock-Recovery repacking tool |
 
 ## Build → bundle → card → boot → check
